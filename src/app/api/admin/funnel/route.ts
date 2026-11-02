@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { kv } from "@vercel/kv";
-import { getSession, getUser, getAllUserEmails, SESSION_COOKIE, ADMIN_EMAIL } from "@/lib/auth";
+import { getUser, getAllUserEmails } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 import { shopKv } from "@/lib/kv";
 import { getFunnel, listFunnelShops } from "@/lib/funnel";
 import { getOnboarding } from "@/lib/onboarding";
@@ -16,12 +17,8 @@ async function kvExists(key: string): Promise<boolean> {
 // Stores that connected before funnel tracking existed have no funnel record - their steps
 // are derived from live state (tokens, plan, connect date) and flagged `tracked: false`.
 export async function GET(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const session = await getSession(token);
-  if (!session || session.email !== ADMIN_EMAIL) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const emails = await getAllUserEmails();
   const users = (await Promise.allSettled(emails.map(e => getUser(e))))

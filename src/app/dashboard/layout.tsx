@@ -42,7 +42,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, []);
 
   // Access gate: send subscribers-only pages to the plans screen when access has lapsed.
-  // Admins and impersonation sessions bypass entirely.
+  // The owner's account and impersonation sessions bypass entirely.
   const exempt = isExemptPath(pathname);
   const gated = adminChecked && accessChecked && !isAdmin && !impersonate && !exempt && !hasAccess;
 
@@ -53,17 +53,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const exitImpersonate = () => {
     localStorage.removeItem("skylitee-impersonate");
     setImpersonate(null);
-    router.push("/dashboard/admin");
+    router.push("/admin");
   };
 
   return (
     <DateRangeProvider>
       <div className="flex h-screen overflow-hidden bg-[#F5F5F4] dark:bg-[#0C0C0C]">
-        {/* Sidebar hidden for admin - they have a single-page panel */}
-        {!isAdmin && <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />}
+        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <Topbar onMenuClick={() => setSidebarOpen(v => !v)} isAdmin={isAdmin} />
+          <Topbar onMenuClick={() => setSidebarOpen(v => !v)} />
 
           {/* Admin impersonation banner */}
           {impersonate && (

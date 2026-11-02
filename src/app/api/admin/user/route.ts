@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, getUser, updateUser, hashPassword, SESSION_COOKIE, ADMIN_EMAIL } from "@/lib/auth";
+import { getUser, updateUser, hashPassword } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 import { shopKv, Grant, DurationType, computeGrantExpiry } from "@/lib/kv";
 
 export async function PATCH(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-
-  const session = await getSession(token);
-  if (!session || session.email !== ADMIN_EMAIL) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const body = await req.json() as {
     email: string;

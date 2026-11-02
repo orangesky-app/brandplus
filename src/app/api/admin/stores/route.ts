@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { kv } from "@vercel/kv";
-import { getSession, getUser, getAllUserEmails, SESSION_COOKIE, ADMIN_EMAIL } from "@/lib/auth";
+import { getUser, getAllUserEmails } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 import { shopKv } from "@/lib/kv";
 import type { UserProfile } from "@/app/api/profile/route";
 
@@ -21,12 +22,8 @@ interface StoreUser {
 // owner, every user who has access (and their role), platform connections, the access code
 // applied to it, plan, and how long it's been connected.
 export async function GET(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const session = await getSession(token);
-  if (!session || session.email !== ADMIN_EMAIL) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   // Load every user once, then invert user.shops[] into shop -> [users].
   const emails = await getAllUserEmails();

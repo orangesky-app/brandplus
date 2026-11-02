@@ -1,23 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, SESSION_COOKIE, ADMIN_EMAIL } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 import { couponKv, Coupon, CouponKind, DurationType, normalizeCoupon } from "@/lib/kv";
 
-async function checkAdmin(req: NextRequest): Promise<boolean> {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return false;
-  const session = await getSession(token);
-  return session?.email === ADMIN_EMAIL;
-}
-
 export async function GET(req: NextRequest) {
-  if (!await checkAdmin(req)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
   const coupons = (await couponKv.listAll()).map(normalizeCoupon);
   coupons.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return NextResponse.json({ coupons });
 }
 
 export async function POST(req: NextRequest) {
-  if (!await checkAdmin(req)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const body = await req.json() as {
     code: string;
@@ -76,7 +71,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  if (!await checkAdmin(req)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const code = req.nextUrl.searchParams.get("code");
   if (!code) return NextResponse.json({ error: "code required" }, { status: 400 });
@@ -90,7 +86,8 @@ export async function DELETE(req: NextRequest) {
 
 // PATCH - deactivate/reactivate a coupon
 export async function PATCH(req: NextRequest) {
-  if (!await checkAdmin(req)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const { code, active } = await req.json() as { code: string; active: boolean };
   const normalized = code.toUpperCase();

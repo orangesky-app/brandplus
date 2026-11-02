@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, getUser, createSession, SESSION_COOKIE, SESSION_MAX_AGE, ADMIN_EMAIL } from "@/lib/auth";
+import { getUser, createSession, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export async function POST(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-
-  const session = await getSession(token);
-  if (!session || session.email !== ADMIN_EMAIL) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const { email } = await req.json().catch(() => ({})) as { email?: string };
   if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });

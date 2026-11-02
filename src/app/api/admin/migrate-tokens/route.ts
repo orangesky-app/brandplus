@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllUserEmails, getUser, getSession, SESSION_COOKIE, ADMIN_EMAIL } from "@/lib/auth";
+import { getAllUserEmails, getUser } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 import { migrateShopToken } from "@/lib/shopify";
 
 // One-time (safe to re-run) sweep that proactively migrates every connected store's Shopify
@@ -10,12 +11,8 @@ import { migrateShopToken } from "@/lib/shopify";
 // Admin-only (same gate as the admin Stores tab): just open this URL in a browser while logged
 // in to skylitee.io as the admin account - no secret needed.
 export async function GET(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const session = await getSession(token);
-  if (!session || session.email !== ADMIN_EMAIL) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   // Collect unique shops across all users.
   const emails = await getAllUserEmails();

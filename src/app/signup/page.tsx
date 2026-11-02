@@ -37,7 +37,7 @@ export default function SignupPage() {
       return;
     }
 
-    router.push(data.isAdmin ? "/admin" : data.next ?? (data.hasInvites ? "/dashboard" : "/connect"));
+    router.push(data.next ?? (data.hasInvites ? "/dashboard" : "/connect"));
   };
 
   return (

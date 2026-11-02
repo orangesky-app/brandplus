@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllUserEmails, getUser, getSession, SESSION_COOKIE, ADMIN_EMAIL } from "@/lib/auth";
+import { getAllUserEmails, getUser } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 import { getValidToken, registerUninstallWebhook } from "@/lib/shopify";
 
 // One-time (safe to re-run) sweep: subscribe every already-connected store to app/uninstalled.
 // New installs are subscribed automatically in the OAuth callback; this covers stores that
 // installed before uninstall tracking existed. Admin-only.
 export async function POST(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const session = await getSession(token);
-  if (!session || session.email !== ADMIN_EMAIL) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const emails = await getAllUserEmails();
   const shops = new Set<string>();

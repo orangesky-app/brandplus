@@ -29,9 +29,7 @@ export default function LoginPage() {
       return;
     }
 
-    if (data.isAdmin) {
-      window.location.href = "/admin";
-    } else if (data.next) {
+    if (data.next) {
       window.location.href = data.next;
     } else if (data.hasShop) {
       window.location.href = "/dashboard";

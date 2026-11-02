@@ -12,7 +12,7 @@ import {
   Search, LineChart, Megaphone,
   GitMerge, Receipt, Trophy, CalendarDays,
   Plug, ChevronDown, UserCircle,
-  X, ShieldCheck, CreditCard, Plus,
+  X, CreditCard, Plus,
   FileText, TrendingUp, BarChart3, DollarSign, HelpCircle, FilePlus, Binoculars,
   KeyRound, ListChecks,
 } from "lucide-react";
@@ -112,7 +112,6 @@ const navSections: NavSection[] = [
       { href: "/dashboard/connections", label: "Connections", icon: Plug, badge: null, dot: null },
       { href: "/dashboard/pricing", label: "Plan & Billing", icon: CreditCard, badge: null, dot: null },
       { href: "/dashboard/profile", label: "Profile & Account", icon: UserCircle, badge: null, dot: null },
-      { href: "/dashboard/admin", label: "Admin Panel", icon: ShieldCheck, badge: null, dot: null },
     ],
   },
 ];
@@ -146,7 +145,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const [ga4Connected, setGa4Connected]   = useState<boolean | null>(null);
   const [gadsConnected, setGadsConnected] = useState<boolean | null>(null);
   const [metaConnected, setMetaConnected] = useState<boolean | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
   // Inside the Shopify admin the app is for that one store - no adding/switching stores.
   const [embedded, setEmbedded] = useState(false);
   useEffect(() => { setEmbedded(isEmbedded()); }, []);
@@ -163,7 +161,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
       .catch(() => {});
     fetch("/api/auth/me")
       .then(r => r.json())
-      .then(d => { if (d.shops) setAllShops(d.shops); if (d.isAdmin) setIsAdmin(true); })
+      .then(d => { if (d.shops) setAllShops(d.shops); })
       .catch(() => {});
     fetch("/api/google/sites")
       .then(r => r.json())
@@ -223,8 +221,8 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </button>
       </div>
 
-      {/* Store switcher - hidden for admin */}
-      <div className={cn("mx-2 mt-2.5", isAdmin && "hidden")}>
+      {/* Store switcher */}
+      <div className="mx-2 mt-2.5">
         <div className="flex items-center gap-1.5" ref={shopMenuRef}>
           {/* Store name / switcher */}
           <div className="flex-1 relative">
@@ -277,115 +275,78 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto py-2">
-        {isAdmin ? (
-          /* Admin-only navigation - no user analytics */
-          <div className="px-2 pt-2 space-y-0.5">
-            <div className="px-2 pb-1 pt-1">
-              <span className="text-[12px] font-bold text-[#A1A1AA] dark:text-[#525252] uppercase tracking-[0.1em]">Admin</span>
-            </div>
-            {[
-              { href: "/dashboard/admin", label: "Admin Panel", icon: ShieldCheck },
-            ].map(item => {
-              const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
-              const Icon = item.icon;
-              return (
-                <Link key={item.href} href={item.href} onClick={onClose}
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-1.5 text-[15px] transition-all relative cursor-pointer mx-1 rounded-lg",
-                    isActive
-                      ? "bg-[#FFF7ED] dark:bg-[#2A1A0E] text-[#EA580C] dark:text-[#FB923C] font-semibold"
-                      : "text-[#71717A] dark:text-[#A1A1AA] hover:bg-[#F5F5F4] dark:hover:bg-[#1C1C1C] hover:text-[#18181B] dark:hover:text-[#F4F4F5]"
-                  )}>
-                  {isActive && <span className="absolute left-0 top-1 bottom-1 w-[3px] bg-[#F97316] rounded-r-full" />}
-                  <Icon size={13} className="shrink-0" />
-                  <span className="flex-1 truncate">{item.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        ) : (
-          navSections.map((section) => {
-            const isOpen = openSections.has(section.label);
-            return (
-              <div key={section.label}>
-                {/* Section header */}
-                <button
-                  onClick={() => toggle(section.label)}
-                  className="w-full flex items-center justify-between px-3 pt-3 pb-1 group"
-                >
-                  <div className="flex items-center gap-1">
-                    <span className="text-[12px] font-bold text-[#A1A1AA] dark:text-[#525252] uppercase tracking-[0.1em] group-hover:text-[#71717A] dark:group-hover:text-[#71717A] transition-colors">
-                      {section.label}
-                    </span>
-                    <Tooltip content={section.tooltip} side="right" maxWidth={220}>
-                      <HelpCircle size={9} className="text-[#D4D4D4] dark:text-[#404040] group-hover:text-[#A1A1AA] transition-colors" />
-                    </Tooltip>
-                  </div>
-                  <ChevronDown
-                    size={10}
-                    className={cn(
-                      "text-[#C4C4C4] dark:text-[#404040] transition-transform duration-200 shrink-0",
-                      isOpen ? "rotate-0" : "-rotate-90"
-                    )}
-                  />
-                </button>
-
-                {/* Items */}
-                <div className={cn(
-                  "overflow-hidden transition-all duration-200 ease-in-out",
-                  isOpen ? "max-h-[400px] opacity-100" : "max-h-0 opacity-0"
-                )}>
-                  {section.items.filter(item => item.href !== "/dashboard/admin").map((item) => {
-                    const isActive = pathname === item.href;
-                    const Icon = item.icon;
-                    const dot = resolveDot(item.dot);
-                    return (
-                      <Link
-                        key={item.href}
-                        href={item.href}
-                        onClick={onClose}
-                        className={cn(
-                          "flex items-center gap-2 px-3 py-1.5 text-[15px] transition-all relative cursor-pointer mx-1 rounded-lg",
-                          isActive
-                            ? "bg-[#FFF7ED] dark:bg-[#2A1A0E] text-[#EA580C] dark:text-[#FB923C] font-semibold"
-                            : "text-[#71717A] dark:text-[#A1A1AA] hover:bg-[#F5F5F4] dark:hover:bg-[#1C1C1C] hover:text-[#18181B] dark:hover:text-[#F4F4F5]"
-                        )}
-                      >
-                        {isActive && <span className="absolute left-0 top-1 bottom-1 w-[3px] bg-[#F97316] rounded-r-full" />}
-                        <Icon size={13} className="shrink-0" />
-                        <span className="flex-1 truncate">{item.label}</span>
-                        {item.badge && (
-                          <span className={cn("text-[13px] px-1.5 py-px rounded-full font-semibold", badgeStyles[item.badge.color])}>
-                            {item.badge.text}
-                          </span>
-                        )}
-                        {dot && <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dotStyles[dot as keyof typeof dotStyles])} />}
-                      </Link>
-                    );
-                  })}
+        {navSections.map((section) => {
+          const isOpen = openSections.has(section.label);
+          return (
+            <div key={section.label}>
+              {/* Section header */}
+              <button
+                onClick={() => toggle(section.label)}
+                className="w-full flex items-center justify-between px-3 pt-3 pb-1 group"
+              >
+                <div className="flex items-center gap-1">
+                  <span className="text-[12px] font-bold text-[#A1A1AA] dark:text-[#525252] uppercase tracking-[0.1em] group-hover:text-[#71717A] dark:group-hover:text-[#71717A] transition-colors">
+                    {section.label}
+                  </span>
+                  <Tooltip content={section.tooltip} side="right" maxWidth={220}>
+                    <HelpCircle size={9} className="text-[#D4D4D4] dark:text-[#404040] group-hover:text-[#A1A1AA] transition-colors" />
+                  </Tooltip>
                 </div>
+                <ChevronDown
+                  size={10}
+                  className={cn(
+                    "text-[#C4C4C4] dark:text-[#404040] transition-transform duration-200 shrink-0",
+                    isOpen ? "rotate-0" : "-rotate-90"
+                  )}
+                />
+              </button>
+
+              {/* Items */}
+              <div className={cn(
+                "overflow-hidden transition-all duration-200 ease-in-out",
+                isOpen ? "max-h-[400px] opacity-100" : "max-h-0 opacity-0"
+              )}>
+                {section.items.map((item) => {
+                  const isActive = pathname === item.href;
+                  const Icon = item.icon;
+                  const dot = resolveDot(item.dot);
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      onClick={onClose}
+                      className={cn(
+                        "flex items-center gap-2 px-3 py-1.5 text-[15px] transition-all relative cursor-pointer mx-1 rounded-lg",
+                        isActive
+                          ? "bg-[#FFF7ED] dark:bg-[#2A1A0E] text-[#EA580C] dark:text-[#FB923C] font-semibold"
+                          : "text-[#71717A] dark:text-[#A1A1AA] hover:bg-[#F5F5F4] dark:hover:bg-[#1C1C1C] hover:text-[#18181B] dark:hover:text-[#F4F4F5]"
+                      )}
+                    >
+                      {isActive && <span className="absolute left-0 top-1 bottom-1 w-[3px] bg-[#F97316] rounded-r-full" />}
+                      <Icon size={13} className="shrink-0" />
+                      <span className="flex-1 truncate">{item.label}</span>
+                      {item.badge && (
+                        <span className={cn("text-[13px] px-1.5 py-px rounded-full font-semibold", badgeStyles[item.badge.color])}>
+                          {item.badge.text}
+                        </span>
+                      )}
+                      {dot && <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dotStyles[dot as keyof typeof dotStyles])} />}
+                    </Link>
+                  );
+                })}
               </div>
-            );
-          })
-        )}
+            </div>
+          );
+        })}
       </nav>
 
       {/* Footer */}
       <div className="px-3 py-2.5 border-t border-black/[0.06] dark:border-white/[0.06] text-[14px] text-[#A1A1AA]">
-        {isAdmin ? (
-          <div className="flex items-center gap-1.5 text-[#F97316] font-semibold">
-            <ShieldCheck size={11} />
-            Admin - rrzala@yellowsky.in
-          </div>
-        ) : (
-          <>
-            <div className="dark:text-[#71717A]">Shopify live sync</div>
-            <div className="flex items-center gap-1 mt-0.5 text-[#EA580C] dark:text-[#FB923C] font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#F97316]" />
-              {liveCount} of 5 platforms live
-            </div>
-          </>
-        )}
+        <div className="dark:text-[#71717A]">Shopify live sync</div>
+        <div className="flex items-center gap-1 mt-0.5 text-[#EA580C] dark:text-[#FB923C] font-semibold">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#F97316]" />
+          {liveCount} of 5 platforms live
+        </div>
       </div>
     </aside>
   );

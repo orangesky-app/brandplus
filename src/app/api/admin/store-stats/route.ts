@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { kv } from "@vercel/kv";
-import { getSession, SESSION_COOKIE, ADMIN_EMAIL } from "@/lib/auth";
+import { requireAdmin } from "@/lib/admin-auth";
 import { fetchOrdersInRange, orderRevenue, resolveShopifyPeriod, isCodGateway } from "@/lib/shopify";
 
 async function kvGet<T>(key: string): Promise<T | null> {
@@ -8,12 +8,8 @@ async function kvGet<T>(key: string): Promise<T | null> {
 }
 
 export async function GET(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const session = await getSession(token);
-  if (!session || session.email !== ADMIN_EMAIL) {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
 
   const shop = req.nextUrl.searchParams.get("shop");
   if (!shop) return NextResponse.json({ error: "Missing shop" }, { status: 400 });
