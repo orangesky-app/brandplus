@@ -4,7 +4,7 @@ import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip as RTooltip, ResponsiveConta
 import { KeyRound } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import {
-  BenchmarkNote, DataTable, DiagPanel, GadsGate, GadsHeader, Judged, KpiTile, Pills,
+  BenchmarkNote, DataTable, DiagPanel, GadsGate, GadsHeader, GoogleCountNote, Judged, KpiTile, Pills,
   PartialNotice, VerdictBadge, useGadsSection, type Column,
 } from "@/components/gads/shared";
 import {
@@ -234,6 +234,7 @@ export default function GadsKeywordsPage() {
         title="Keywords & Searches"
         subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}` : "Quality Score, match types and the searches you pay for"}
       />
+      <GoogleCountNote />
       <GadsGate state={state}>{d => <KeywordsView d={d} />}</GadsGate>
     </div>
   );

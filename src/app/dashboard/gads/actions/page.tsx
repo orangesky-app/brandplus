@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { ListChecks } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import {
-  BenchmarkNote, DiagPanel, EmptyNote, GadsGate, GadsHeader, Pills, useGadsSection,
+  BenchmarkNote, DiagPanel, EmptyNote, GadsGate, GadsHeader, GoogleCountNote, Pills, useGadsSection,
 } from "@/components/gads/shared";
 import {
   diagnoseAds, diagnoseAudience, diagnoseKeywords, diagnoseOverview, rankDiags, titleCase,
@@ -97,6 +97,7 @@ export default function GadsActionsPage() {
         title="Recommendations"
         subtitle={overview.data ? `${overview.data.account} · ${overview.data.period.from} to ${overview.data.period.to}` : "Everything to fix or scale, ranked by money at stake"}
       />
+      <GoogleCountNote mixed />
       <GadsGate state={overview}>{d => <Actions overview={d} extra={extra} missing={missing} />}</GadsGate>
     </div>
   );

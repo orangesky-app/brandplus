@@ -4,22 +4,44 @@
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
-export type Channel = "SEARCH" | "SHOPPING" | "PERFORMANCE_MAX" | "DISPLAY" | "VIDEO" | "DEMAND_GEN" | "OTHER";
+export type Channel = "SEARCH" | "SHOPPING" | "PERFORMANCE_MAX" | "DISPLAY" | "VIDEO" | "DEMAND_GEN" | "APP" | "SMART" | "OTHER";
 
 export const CHANNEL_LABEL: Record<Channel, string> = {
   SEARCH: "Search", SHOPPING: "Shopping", PERFORMANCE_MAX: "Performance Max",
-  DISPLAY: "Display", VIDEO: "YouTube / Video", DEMAND_GEN: "Demand Gen", OTHER: "Other",
+  DISPLAY: "Display", VIDEO: "YouTube / Video", DEMAND_GEN: "Demand Gen", APP: "App", SMART: "Smart", OTHER: "Other",
+};
+
+// These types have no keywords or headlines to fix, so low CTR needs a different remedy.
+const CTR_FIX: Partial<Record<Channel, string>> = {
+  SHOPPING: "improve product titles and images in your feed, and check your prices against competitors",
+  VIDEO: "show the product and the offer in the first 5 seconds, add a clear call to action, and narrow the audience",
+  DISPLAY: "use a clearer image with the offer visible on it, and narrow the audience",
+  DEMAND_GEN: "use a clearer image or video with the offer visible on it, and narrow the audience",
+};
+
+// What each campaign type is for, shown beside it so the table reads without Google Ads knowledge.
+export const CHANNEL_PURPOSE: Record<Channel, string> = {
+  SEARCH: "Reaches people searching on Google",
+  PERFORMANCE_MAX: "Seeks conversions across all of Google's placements",
+  SHOPPING: "Shows your products through Merchant Center",
+  DEMAND_GEN: "Visual, video and product ads",
+  DISPLAY: "Image ads on websites and apps",
+  VIDEO: "Video ads, mainly on YouTube",
+  APP: "App installs and in-app actions",
+  SMART: "Simplified campaigns for small businesses",
+  OTHER: "Other campaign types, such as hotel or local",
 };
 
 // Fixed per channel so a colour always means the same campaign type across charts.
 export const CHANNEL_COLOR: Record<Channel, string> = {
   SEARCH: "#F97316", SHOPPING: "#3B82F6", PERFORMANCE_MAX: "#22C55E",
-  DISPLAY: "#8B5CF6", VIDEO: "#EC4899", DEMAND_GEN: "#EAB308", OTHER: "#14B8A6",
+  DISPLAY: "#8B5CF6", VIDEO: "#EC4899", DEMAND_GEN: "#EAB308", APP: "#78716C", SMART: "#A16207", OTHER: "#14B8A6",
 };
 
 export function channelOf(raw?: string): Channel {
-  if (raw === "SEARCH" || raw === "SHOPPING" || raw === "DISPLAY" || raw === "VIDEO" || raw === "PERFORMANCE_MAX" || raw === "DEMAND_GEN") return raw;
-  return "OTHER";
+  if (raw === "SEARCH" || raw === "SHOPPING" || raw === "DISPLAY" || raw === "VIDEO" || raw === "PERFORMANCE_MAX" || raw === "DEMAND_GEN" || raw === "SMART") return raw;
+  // Google's API calls App campaigns MULTI_CHANNEL.
+  return raw === "MULTI_CHANNEL" ? "APP" : "OTHER";
 }
 
 export interface GMetrics {
@@ -56,18 +78,24 @@ export interface Campaign extends GMetrics {
   // Impression shares are percentages; null when Google doesn't report them for this campaign type.
   searchIS: number | null; searchBudgetLost: number | null; searchRankLost: number | null;
   searchTopIS: number | null; searchAbsTopIS: number | null; contentIS: number | null;
+  // conversions and convValue hold only the goal matching the objective. Google's own figures sit beside them.
+  objective: Objective; objectiveWhy: string; googleConversions: number; googleValue: number;
+  notCounted: GoalLine[]; usedSecondary: boolean; allConversions: number; viewThrough: number;
 }
 
 export interface DailyRow extends GMetrics { date: string }
+export interface ObjectiveDaily extends DailyRow { objective: Objective }
 export interface ConversionAction { name: string; category: string; conversions: number; value: number }
 export interface GoogleSuggestion { type: string; count: number; extraConversions: number }
 
 export interface OverviewData {
   account: string; currency: string; timeZone: string; optimizationScore: number | null;
   period: { from: string; to: string }; prevPeriod: { from: string; to: string };
-  totals: GMetrics & { allConversions: number; viewThrough: number };
-  prev: GMetrics | null;
-  daily: DailyRow[]; campaigns: Campaign[]; conversionActions: ConversionAction[];
+  totals: GMetrics & { allConversions: number; viewThrough: number; googleConversions: number; googleValue: number };
+  prev: GMetrics | null; prevByObjective: Partial<Record<Objective, GMetrics>>;
+  daily: DailyRow[]; dailyByObjective: ObjectiveDaily[]; campaigns: Campaign[]; conversionActions: ConversionAction[];
+  // False when Google refused the per-goal split, so every number is Google's own count.
+  goalCounting: boolean;
   suggestions: GoogleSuggestion[];
   errors: Record<string, string>;
 }
@@ -143,6 +171,175 @@ function names(list: string[], n = 3) {
   return list.length > n ? `${short} and ${list.length - n} more` : short;
 }
 
+/* ── Objectives and conversion goals ───────────────────────────────────────
+   Each objective counts one goal only: Sales = Purchases, Leads = Leads, Traffic = Engagements,
+   Video Views = YouTube follow-on views. Google's "Conversions" column adds up every Primary goal,
+   so a Sales campaign can count Add to cart with its purchases, which flatters cost per conversion.
+   No campaign field naming the objective was found in the API reference, so it's worked out from
+   the campaign's goals, name, type and bidding, and shown with the reason. */
+
+export type Objective = "SALES" | "LEADS" | "TRAFFIC" | "VIDEO_VIEWS" | "OTHER";
+export type ObjectiveFilter = Objective | "ALL";
+
+export const OBJECTIVES: Objective[] = ["SALES", "LEADS", "TRAFFIC", "VIDEO_VIEWS", "OTHER"];
+export const OBJECTIVE_LABEL: Record<Objective, string> = {
+  SALES: "Sales", LEADS: "Leads", TRAFFIC: "Traffic", VIDEO_VIEWS: "Video Views", OTHER: "Other",
+};
+export const OBJECTIVE_GOAL: Record<Objective, string> = {
+  SALES: "Purchases", LEADS: "Leads", TRAFFIC: "Engagements", VIDEO_VIEWS: "YouTube follow-on views", OTHER: "Conversions",
+};
+const GOAL_WORD: Record<Objective, string> = {
+  SALES: "purchases", LEADS: "leads", TRAFFIC: "engagements", VIDEO_VIEWS: "YouTube follow-on views", OTHER: "conversions",
+};
+
+const LEAD_CATEGORIES = ["SUBMIT_LEAD_FORM", "IMPORTED_LEAD", "QUALIFIED_LEAD", "CONVERTED_LEAD", "PHONE_CALL_LEAD", "MESSAGE_LEAD", "CONTACT", "BOOK_APPOINTMENT", "REQUEST_QUOTE", "SIGNUP"];
+const SALE_FAMILY = ["PURCHASE", "ADD_TO_CART", "BEGIN_CHECKOUT", "STORE_SALE", "SUBSCRIBE_PAID"];
+const COUNTED: Record<Exclude<Objective, "OTHER">, string[]> = {
+  SALES: ["PURCHASE"], LEADS: LEAD_CATEGORIES, TRAFFIC: ["ENGAGEMENT"], VIDEO_VIEWS: ["YOUTUBE_FOLLOW_ON_VIEWS"],
+};
+
+export function goalLabel(category: string) {
+  if (category === "PURCHASE") return "Purchases";
+  if (category === "ENGAGEMENT") return "Engagements";
+  if (category === "YOUTUBE_FOLLOW_ON_VIEWS") return "YouTube follow-on views";
+  const words = titleCase(category);
+  return words.charAt(0) + words.slice(1).toLowerCase();
+}
+
+// Which objective a conversion category counts toward, or null when none does.
+export function objectiveOfCategory(category: string): Objective | null {
+  const list = Object.entries(COUNTED) as [Objective, string[]][];
+  return list.find(([, cats]) => cats.includes(category))?.[0] ?? null;
+}
+
+export interface GoalResult { category: string; conversions: number; value: number; allConversions: number; allValue: number }
+export interface GoalLine { category: string; label: string; conversions: number; value: number }
+
+export function mergeGoalLines(lists: GoalLine[][]): GoalLine[] {
+  const merged = new Map<string, GoalLine>();
+  for (const line of lists.flat()) {
+    const item = merged.get(line.category) ?? { ...line, conversions: 0, value: 0 };
+    item.conversions += line.conversions;
+    item.value += line.value;
+    merged.set(line.category, item);
+  }
+  return [...merged.values()].sort((a, b) => b.conversions - a.conversions);
+}
+
+export function goalLinesText(lines: GoalLine[]) {
+  return lines.map(l => `${l.label} ${Math.round(l.conversions).toLocaleString("en-IN")}`).join(", ");
+}
+
+const VIEW_BIDDING = ["TARGET_CPV", "MANUAL_CPV", "TARGET_CPM", "MANUAL_CPM"];
+const CLICK_BIDDING = ["TARGET_SPEND", "MANUAL_CPC"];
+const NAME_HINTS: [Objective, RegExp][] = [
+  ["SALES", /\b(sales?|purchases?)\b/i],
+  ["LEADS", /\b(leads?|lead[\s-]?gen)\b/i],
+  ["TRAFFIC", /\b(website\s+)?traffic\b/i],
+  ["VIDEO_VIEWS", /\b(video\s+views?|views?\s+campaign|yt\s+views?|youtube\s+views?)\b/i],
+];
+
+export function detectObjective(input: { name: string; channel: Channel; bidding: string; goals: string[]; results: GoalResult[] }): { objective: Objective; why: string } {
+  const { name, channel, bidding, goals, results } = input;
+  if (channel === "APP") return { objective: "OTHER", why: "App campaigns work toward installs, so Google's own count is used" };
+
+  const has = (list: string[]) => goals.some(g => list.includes(g));
+  const hasSale = has(SALE_FAMILY);
+  const hasLead = has(LEAD_CATEGORIES);
+  const recorded = (list: string[]) => results.filter(r => list.includes(r.category)).reduce((s, r) => s + Math.max(r.conversions, r.allConversions), 0);
+  const purchases = recorded(["PURCHASE"]);
+  const leads = recorded(LEAD_CATEGORIES);
+
+  // A goal list with only one family can't mean anything else.
+  if (hasLead && !hasSale) return { objective: "LEADS", why: "Its conversion goals are lead goals" };
+  if (!hasSale && !hasLead) {
+    if (goals.includes("YOUTUBE_FOLLOW_ON_VIEWS") && (channel === "VIDEO" || !goals.includes("ENGAGEMENT"))) return { objective: "VIDEO_VIEWS", why: "Its conversion goal is YouTube follow-on views" };
+    if (goals.includes("ENGAGEMENT")) return { objective: "TRAFFIC", why: "Its conversion goal is engagements" };
+  }
+
+  // Goals can be inherited from the account default, so the campaign name comes next.
+  const named = NAME_HINTS.filter(([, re]) => re.test(name));
+  if (named.length === 1) return { objective: named[0][0], why: `Its name says "${OBJECTIVE_LABEL[named[0][0]]}"` };
+
+  if (channel === "VIDEO" && VIEW_BIDDING.includes(bidding)) return { objective: "VIDEO_VIEWS", why: "A YouTube campaign bidding for views" };
+
+  if (hasSale && hasLead) {
+    if (leads > purchases) return { objective: "LEADS", why: "Has both sale and lead goals, and records more leads" };
+    return { objective: "SALES", why: purchases > 0 ? "Has both sale and lead goals, and records more purchases" : "Has both sale and lead goals with no results yet, so this is a best guess" };
+  }
+  if (hasSale) {
+    if (CLICK_BIDDING.includes(bidding) && purchases === 0) return { objective: "TRAFFIC", why: "Bids for clicks and records no purchases" };
+    return { objective: "SALES", why: "Its conversion goals are sale goals" };
+  }
+
+  // Google gave no goal list for this campaign.
+  if (purchases > 0) return { objective: "SALES", why: "It records purchases" };
+  if (leads > 0) return { objective: "LEADS", why: "It records leads" };
+  if (channel === "VIDEO" && recorded(["YOUTUBE_FOLLOW_ON_VIEWS"]) > 0) return { objective: "VIDEO_VIEWS", why: "It records YouTube follow-on views" };
+  if (channel === "SHOPPING" || channel === "PERFORMANCE_MAX") return { objective: "SALES", why: `${CHANNEL_LABEL[channel]} campaigns usually aim for sales` };
+  if (CLICK_BIDDING.includes(bidding)) return { objective: "TRAFFIC", why: "It bids for clicks" };
+  return { objective: "OTHER", why: "Not enough information to tell, so Google's own count is used" };
+}
+
+export interface GoalCount { conversions: number; convValue: number; usedSecondary: boolean; notCounted: GoalLine[] }
+
+// Secondary goals show 0 in Google's main column but still appear in All conversions. A campaign
+// whose matching goal is Secondary is read from there instead of showing a false zero.
+export function countForObjective(objective: Objective, rows: GoalResult[], google: { conversions: number; convValue: number }, useAll?: boolean): GoalCount {
+  if (objective === "OTHER") return { conversions: google.conversions, convValue: google.convValue, usedSecondary: false, notCounted: [] };
+  const wanted = COUNTED[objective];
+  const matching = rows.filter(r => wanted.includes(r.category));
+  const primary = matching.reduce((s, r) => s + r.conversions, 0);
+  const all = matching.reduce((s, r) => s + r.allConversions, 0);
+  const usedSecondary = useAll ?? (primary === 0 && all > 0);
+  const notCounted = mergeGoalLines([rows
+    .filter(r => !wanted.includes(r.category) && r.conversions > 0)
+    .map(r => ({ category: r.category, label: goalLabel(r.category), conversions: r.conversions, value: r.value }))]);
+  return usedSecondary
+    ? { conversions: all, convValue: matching.reduce((s, r) => s + r.allValue, 0), usedSecondary, notCounted }
+    : { conversions: primary, convValue: matching.reduce((s, r) => s + r.value, 0), usedSecondary, notCounted };
+}
+
+export function rollDaily(rows: DailyRow[]): DailyRow[] {
+  const days = new Map<string, DailyRow[]>();
+  for (const r of rows) days.set(r.date, [...(days.get(r.date) ?? []), r]);
+  return [...days.entries()]
+    .map(([date, list]) => ({ date, ...sumMetrics(list) }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Everything on the Overview for one objective, or the whole account for "ALL".
+export function objectiveView(o: OverviewData, filter: ObjectiveFilter) {
+  if (filter === "ALL") return { campaigns: o.campaigns, totals: o.totals, prev: o.prev, daily: o.daily };
+  const campaigns = o.campaigns.filter(c => c.objective === filter);
+  const add = (f: (c: Campaign) => number) => campaigns.reduce((s, c) => s + f(c), 0);
+  return {
+    campaigns,
+    totals: {
+      ...sumMetrics(campaigns), allConversions: add(c => c.allConversions), viewThrough: add(c => c.viewThrough),
+      googleConversions: add(c => c.googleConversions), googleValue: add(c => c.googleValue),
+    },
+    prev: o.prevByObjective[filter] ?? null,
+    daily: rollDaily(o.dailyByObjective.filter(r => r.objective === filter)),
+  };
+}
+
+export interface ObjectiveRow { objective: Objective; campaigns: number; metrics: GMetrics; googleConversions: number; notCounted: GoalLine[] }
+
+export function buildObjectiveRows(campaigns: Campaign[]): ObjectiveRow[] {
+  return OBJECTIVES
+    .map(objective => {
+      const list = campaigns.filter(c => c.objective === objective);
+      return {
+        objective, campaigns: list.length, metrics: sumMetrics(list),
+        googleConversions: list.reduce((s, c) => s + c.googleConversions, 0),
+        notCounted: mergeGoalLines(list.map(c => c.notCounted)),
+      };
+    })
+    .filter(r => r.campaigns > 0)
+    .sort((a, b) => b.metrics.spend - a.metrics.spend);
+}
+
 /* ── Industry benchmarks ───────────────────────────────────────────────────
    Published reference points, NOT Google's own numbers and NOT guarantees. No source covers
    every campaign type, so each figure is only set where one was published:
@@ -164,7 +361,9 @@ export const BENCHMARKS: Record<Channel, ChannelBenchmark> = {
   DISPLAY:         { ctr: 0.46, cvr: null, roas: null },
   VIDEO:           { ctr: 0.51, cvr: null, roas: null },
   DEMAND_GEN:      { ctr: null, cvr: null, roas: null },
-  OTHER:           { ctr: 1.79, cvr: 3.13, roas: 4.28 },
+  APP:             { ctr: null, cvr: null, roas: null },
+  SMART:           { ctr: null, cvr: null, roas: null },
+  OTHER:          { ctr: 1.79, cvr: 3.13, roas: 4.28 },
 };
 
 // Same ROAS bars as the Meta pages, so both ad platforms are held to one standard.
@@ -206,34 +405,36 @@ export function judgeShare(v: number | null): Verdict {
 const MIN_CTR_IMPRESSIONS = 500;
 const MIN_CVR_CLICKS = 30;
 // Video and Display mostly build awareness, so sales KPIs aren't held against them.
-const isSalesChannel = (c: Channel) => c === "SEARCH" || c === "SHOPPING" || c === "PERFORMANCE_MAX" || c === "DEMAND_GEN" || c === "OTHER";
+const isSalesChannel = (c: Channel) => c === "SEARCH" || c === "SHOPPING" || c === "PERFORMANCE_MAX" || c === "DEMAND_GEN" || c === "SMART" || c === "OTHER";
 
 export interface ScoreRow { kpi: string; you: string; standard: string; verdict: Verdict; note: string }
 export interface ChannelScore { channel: Channel; spend: number; metrics: GMetrics; rows: ScoreRow[] }
 
-function kpiRows(channel: Channel, m: GMetrics): ScoreRow[] {
+// CTR applies to every campaign. Conversion rate and ROAS are sales measures, so they only use
+// Sales campaigns: a Leads campaign shouldn't be judged against a purchase benchmark.
+function kpiRows(channel: Channel, all: GMetrics, sales: GMetrics): ScoreRow[] {
   const b = BENCHMARKS[channel];
   const rows: ScoreRow[] = [];
   if (b.ctr !== null) {
-    const enough = m.impressions >= MIN_CTR_IMPRESSIONS;
+    const enough = all.impressions >= MIN_CTR_IMPRESSIONS;
     rows.push({
-      kpi: "CTR", you: `${m.ctr.toFixed(2)}%`, standard: `${b.ctr}%`,
-      verdict: enough ? judgeAgainst(m.ctr, b.ctr) : "na",
+      kpi: "CTR", you: `${all.ctr.toFixed(2)}%`, standard: `${b.ctr}%`,
+      verdict: enough ? judgeAgainst(all.ctr, b.ctr) : "na",
       note: enough ? "How often people click after seeing the ad" : "Not enough impressions yet to judge",
     });
   }
-  if (b.cvr !== null) {
-    const enough = m.clicks >= MIN_CVR_CLICKS;
+  if (b.cvr !== null && sales.clicks > 0) {
+    const enough = sales.clicks >= MIN_CVR_CLICKS;
     rows.push({
-      kpi: "Conversion rate", you: `${m.cvr.toFixed(2)}%`, standard: `${b.cvr}%`,
-      verdict: enough ? judgeAgainst(m.cvr, b.cvr) : "na",
-      note: enough ? "How many clicks become conversions" : "Not enough clicks yet to judge",
+      kpi: "Conversion rate", you: `${sales.cvr.toFixed(2)}%`, standard: `${b.cvr}%`,
+      verdict: enough ? judgeAgainst(sales.cvr, b.cvr) : "na",
+      note: enough ? "How many clicks become purchases" : "Not enough clicks yet to judge",
     });
   }
-  if (isSalesChannel(channel) && m.convValue > 0) {
+  if (sales.convValue > 0) {
     rows.push({
-      kpi: "ROAS", you: `${m.roas.toFixed(2)}x`, standard: `${ROAS_TARGET}x target${b.roas ? `, peers ${b.roas}x` : ""}`,
-      verdict: judgeRoas(m.roas), note: "How much conversion value each unit of ad spend earns",
+      kpi: "ROAS", you: `${sales.roas.toFixed(2)}x`, standard: `${ROAS_TARGET}x target${b.roas ? `, peers ${b.roas}x` : ""}`,
+      verdict: judgeRoas(sales.roas), note: "How much sales value each unit of ad spend earns",
     });
   }
   return rows;
@@ -245,9 +446,60 @@ export function buildScorecard(campaigns: Campaign[]): ChannelScore[] {
   return [...groups.entries()]
     .map(([channel, list]) => {
       const metrics = sumMetrics(list);
-      return { channel, spend: metrics.spend, metrics, rows: kpiRows(channel, metrics) };
+      return { channel, spend: metrics.spend, metrics, rows: kpiRows(channel, metrics, sumMetrics(list.filter(c => c.objective === "SALES"))) };
     })
     .sort((a, b) => b.spend - a.spend);
+}
+
+/* ── Which ads are working ─────────────────────────────────────────────── */
+
+export interface AdTypeRow { channel: Channel; objective: Objective; metrics: GMetrics; verdict: Verdict; label: string; why: string }
+
+const RESULT_LABEL: Record<Exclude<Verdict, "na">, string> = { good: "Good", watch: "Check", bad: "Review" };
+
+function judgeAdType(objective: Objective, channel: Channel, m: GMetrics, peers: GMetrics[], cur: string): Pick<AdTypeRow, "verdict" | "label" | "why"> {
+  const result = (verdict: Verdict, why: string) => ({ verdict, label: verdict === "na" ? "No verdict" : RESULT_LABEL[verdict], why });
+  const none = (label: string, why: string) => ({ verdict: "na" as const, label, why });
+  const roasResult = () => {
+    const v = judgeRoas(m.roas);
+    return result(v, `Earns ${m.roas.toFixed(2)}x. ${v === "good" ? `At or above the ${ROAS_TARGET}x target` : v === "watch" ? `Between the ${ROAS_MIN}x minimum and the ${ROAS_TARGET}x target` : `Below the ${ROAS_MIN}x minimum`}`);
+  };
+
+  if ((objective === "SALES" || objective === "LEADS") && m.conversions === 0) {
+    return m.clicks < MIN_CVR_CLICKS
+      ? none("Too early", `Only ${m.clicks.toLocaleString("en-IN")} clicks so far`)
+      : result("bad", `${m.clicks.toLocaleString("en-IN")} clicks and no ${GOAL_WORD[objective]}`);
+  }
+  if (objective === "SALES") return m.convValue > 0 ? roasResult() : none("No sale value", "Purchases are recorded, but Google gets no sale amount");
+  if (objective === "LEADS") {
+    if (peers.length < 2) return none("No comparison", `${money(cur, m.cpa)} per lead. Only one lead campaign type, and lead costs have no reliable benchmark`);
+    const avg = sumMetrics(peers).cpa;
+    return result(m.cpa <= avg ? "good" : m.cpa <= avg * 1.3 ? "watch" : "bad", `${money(cur, m.cpa)} per lead against your ${money(cur, avg)} average`);
+  }
+  if (objective === "TRAFFIC") {
+    const bench = BENCHMARKS[channel].ctr;
+    if (bench === null) return none("No benchmark", `CTR ${m.ctr.toFixed(2)}%. No reliable published figure for this type`);
+    if (m.impressions < MIN_CTR_IMPRESSIONS) return none("Too early", `Only ${m.impressions.toLocaleString("en-IN")} impressions so far`);
+    return result(judgeAgainst(m.ctr, bench), `CTR ${m.ctr.toFixed(2)}% against the ${bench}% benchmark`);
+  }
+  if (objective === "VIDEO_VIEWS") {
+    if (m.conversions === 0 && m.impressions >= MIN_CTR_IMPRESSIONS) return result("watch", `${m.impressions.toLocaleString("en-IN")} impressions and no YouTube follow-on views`);
+    return none("No benchmark", "No reliable published figure for YouTube follow-on views");
+  }
+  return m.convValue > 0 ? roasResult() : none("No verdict", "No objective detected, so there's nothing fair to judge it against");
+}
+
+// One row per campaign type and objective, because a type can run for two objectives at once.
+export function buildAdTypeTable(campaigns: Campaign[], cur: string): AdTypeRow[] {
+  const groups = new Map<string, Campaign[]>();
+  for (const c of campaigns) {
+    const key = `${c.channel}|${c.objective}`;
+    groups.set(key, [...(groups.get(key) ?? []), c]);
+  }
+  const rows = [...groups.values()].map(list => ({ channel: list[0].channel, objective: list[0].objective, metrics: sumMetrics(list) }));
+  return rows
+    .map(r => ({ ...r, ...judgeAdType(r.objective, r.channel, r.metrics, rows.filter(x => x.objective === r.objective).map(x => x.metrics), cur) }))
+    .sort((a, b) => b.metrics.spend - a.metrics.spend);
 }
 
 export interface AdCheck { kpi: string; you: string; standard: string; verdict: Verdict; advice: string }
@@ -321,97 +573,133 @@ function ctxFrom(cur: string, rows: GMetrics[]): Ctx {
   };
 }
 
-export function diagnoseOverview(o: OverviewData): Diag[] {
+export function diagnoseOverview(o: OverviewData, filter: ObjectiveFilter = "ALL"): Diag[] {
   const out: Diag[] = [];
   const cur = o.currency;
-  const t = o.totals;
-  const ctx = ctxFrom(cur, o.campaigns);
-  if (t.spend <= 0) return out;
+  const campaigns = filter === "ALL" ? o.campaigns : o.campaigns.filter(c => c.objective === filter);
+  // Campaign detail can fail on its own. The account totals can still reveal missing tracking.
+  if (campaigns.length === 0) {
+    if (filter === "ALL" && o.totals.spend > 0 && o.totals.conversions === 0) {
+      out.push({ area: "Tracking", severity: "issue", impact: o.totals.spend, impactLabel: "spend with no recorded result", title: `${money(cur, o.totals.spend)} spent with 0 conversions recorded`, body: "Either conversion tracking isn't set up or nothing sold. Check first: in Google Ads go to Goals > Conversions and place a test order. Until tracking works, Google's automated bidding has nothing to learn from." });
+    }
+    return out;
+  }
+  if (campaigns.reduce((s, c) => s + c.spend, 0) <= 0) return out;
+  const noun = (obj: Objective) => (o.goalCounting ? GOAL_WORD[obj] : "conversions");
+  const groups = OBJECTIVES
+    .map(objective => ({ objective, list: campaigns.filter(c => c.objective === objective) }))
+    .filter(g => g.list.length > 0);
 
-  // Tracking comes first: every ROAS verdict below is meaningless if this is broken.
-  const tracked = t.conversions > 0;
-  if (!tracked) {
-    out.push({
-      area: "Tracking", severity: "issue", impact: t.spend, impactLabel: "spend with no recorded result",
-      title: `${money(cur, t.spend)} spent with 0 conversions recorded`,
-      body: "Either conversion tracking isn't set up or nothing sold. Check first: in Google Ads go to Goals > Conversions and place a test order. Until tracking works, Google's automated bidding has nothing to learn from.",
-    });
-  } else if (t.convValue <= 0) {
-    out.push({
-      area: "Tracking", severity: "issue",
-      title: `${Math.round(t.conversions)} conversions but no revenue value`,
-      body: "Google counts conversions but gets no sale amount, so ROAS can't be calculated and value-based bidding can't work. Fix: send the order value with your purchase conversion, for example through the Google & YouTube app on Shopify.",
-    });
+  // Tracking comes first: every verdict below is meaningless if this is broken.
+  for (const { objective, list } of groups) {
+    const m = sumMetrics(list);
+    const label = OBJECTIVE_LABEL[objective];
+    const word = noun(objective);
+    const recordedElse = mergeGoalLines(list.map(c => c.notCounted));
+
+    if ((objective === "SALES" || objective === "LEADS") && m.conversions === 0 && m.clicks >= MIN_CVR_CLICKS) {
+      out.push({
+        area: "Tracking", severity: "issue", impact: m.spend, impactLabel: "spend with no recorded result",
+        title: `${money(cur, m.spend)} on ${label} campaigns with 0 ${word} recorded`,
+        body: `${recordedElse.length > 0 ? `Google did record ${goalLinesText(recordedElse)}, but no ${word}. ` : ""}Either the tracking is missing or nothing ${objective === "SALES" ? "sold" : "came in"}. Check first: in Google Ads go to Goals > Conversions and place a test ${objective === "SALES" ? "order" : "enquiry"}. If the action exists but sits under a category like "Other", change its category, because only the matching category counts here.`,
+      });
+    }
+    if (objective === "SALES" && m.conversions > 0 && m.convValue <= 0) {
+      out.push({
+        area: "Tracking", severity: "issue",
+        title: `${Math.round(m.conversions)} ${word} but no sale value`,
+        body: "Google records the purchases but gets no sale amount, so ROAS can't be calculated and value-based bidding can't work. Fix: send the order value with your purchase conversion, for example through the Google & YouTube app on Shopify.",
+      });
+    }
+
+    const google = list.reduce((s, c) => s + c.googleConversions, 0);
+    const extra = recordedElse.reduce((s, l) => s + l.conversions, 0);
+    if (objective !== "OTHER" && google > 0 && extra / google >= 0.2) {
+      out.push({
+        area: "Tracking", severity: "warning",
+        title: `${Math.round((extra / google) * 100)}% of Google's "conversions" on ${label} campaigns aren't ${GOAL_WORD[objective]}`,
+        body: `Google also counts ${goalLinesText(recordedElse)}. Skylitee leaves them out here, but Google still bids toward them, so budget can chase the easier action. Fix in Google Ads: open each campaign, go to Settings > Goals, and keep only ${OBJECTIVE_GOAL[objective]}. Skylitee only reads your account, so this has to be changed there.`,
+      });
+    }
+
+    const secondary = list.filter(c => c.usedSecondary);
+    if (secondary.length > 0) {
+      out.push({
+        area: "Tracking", severity: "warning",
+        title: `${nOf(secondary.length, "campaign isn't", "campaigns aren't")} optimising for ${GOAL_WORD[objective]}`,
+        body: `${names(secondary.map(c => c.name))}. ${OBJECTIVE_GOAL[objective]} are recorded but aren't one of the goals these campaigns use, so Google isn't bidding toward them. Skylitee still counts them here, from All conversions. Fix in Google Ads: in the campaign's Settings > Goals add ${OBJECTIVE_GOAL[objective]}, and check under Goals > Conversions that the action is set to Primary.`,
+      });
+    }
   }
 
-  const nonPurchase = o.conversionActions.filter(a => a.category !== "PURCHASE" && a.conversions > 0);
-  const nonPurchaseCount = nonPurchase.reduce((s, a) => s + a.conversions, 0);
-  const allCount = o.conversionActions.reduce((s, a) => s + a.conversions, 0);
-  if (allCount > 0 && nonPurchaseCount / allCount >= 0.2 && o.conversionActions.some(a => a.category === "PURCHASE")) {
-    out.push({
-      area: "Tracking", severity: "warning",
-      title: `${Math.round((nonPurchaseCount / allCount) * 100)}% of "conversions" aren't purchases`,
-      body: `${names(nonPurchase.map(a => a.name))} count as conversions alongside purchases. That makes cost per conversion look better than it is, and bidding chases the easier action. Fix: in Goals > Conversions, set non-purchase actions to Secondary.`,
-    });
-  }
-
-  // ROAS is judged on sales channels only, so awareness spend isn't flagged on a sales metric.
-  const sales = sumMetrics(o.campaigns.filter(c => isSalesChannel(c.channel)));
+  // ROAS is judged on Sales campaigns only, so other objectives aren't flagged on a sales metric.
+  const sales = sumMetrics(campaigns.filter(c => c.objective === "SALES"));
   if (sales.spend > 0 && sales.convValue > 0) {
     const r = sales.roas;
     const v = judgeRoas(r);
-    if (v === "good") out.push({ area: "Account", severity: "strength", title: `ROAS ${r.toFixed(2)}x - above the ${ROAS_TARGET}x target`, body: "Your sales campaigns return well above cost, because intent, offer and targeting line up. To keep it: raise budgets about 20% at a time on the best campaigns so automated bidding doesn't have to relearn." });
-    else if (v === "watch") out.push({ area: "Account", severity: "warning", title: `ROAS ${r.toFixed(2)}x - below the ${ROAS_TARGET}x target`, body: `Above the ${ROAS_MIN}x minimum but thin once product and shipping costs are paid. Likely cause: a few weak campaigns pulling down the good ones. Fix: move budget from the lowest-ROAS campaigns below to the best, and clear the wasted search terms on the Keywords page.` });
-    else out.push({ area: "Account", severity: "issue", impact: Math.max(0, sales.spend * ROAS_MIN - sales.convValue), impactLabel: `value short of ${ROAS_MIN}x`, title: `ROAS ${r.toFixed(2)}x - below the ${ROAS_MIN}x minimum`, body: "Sales campaigns are earning too little for what they cost. Likely cause: low-intent traffic or a weak landing page. Fix: stop the zero-conversion campaigns and keywords first, and don't raise any budget until ROAS clears the minimum." });
+    if (v === "good") out.push({ area: "Account", severity: "strength", title: `Sales ROAS ${r.toFixed(2)}x - above the ${ROAS_TARGET}x target`, body: "Your sales campaigns return well above cost, because intent, offer and targeting line up. To keep it: raise budgets about 20% at a time on the best campaigns so automated bidding doesn't have to relearn." });
+    else if (v === "watch") out.push({ area: "Account", severity: "warning", title: `Sales ROAS ${r.toFixed(2)}x - below the ${ROAS_TARGET}x target`, body: `Above the ${ROAS_MIN}x minimum but thin once product and shipping costs are paid. Likely cause: a few weak campaigns pulling down the good ones. Fix: move budget from the lowest-ROAS campaigns below to the best, and clear the wasted search terms on the Keywords page.` });
+    else out.push({ area: "Account", severity: "issue", impact: Math.max(0, sales.spend * ROAS_MIN - sales.convValue), impactLabel: `value short of ${ROAS_MIN}x`, title: `Sales ROAS ${r.toFixed(2)}x - below the ${ROAS_MIN}x minimum`, body: "Sales campaigns are earning too little for what they cost. Likely cause: low-intent traffic or a weak landing page. Fix: stop the zero-purchase campaigns and keywords first, and don't raise any budget until ROAS clears the minimum." });
   }
 
   // One verdict per channel KPI that has a published benchmark and enough data behind it.
-  for (const score of buildScorecard(o.campaigns)) {
+  for (const score of buildScorecard(campaigns)) {
     const label = CHANNEL_LABEL[score.channel];
     for (const row of score.rows) {
       if (row.kpi === "ROAS" || row.verdict === "na") continue;
       if (row.verdict === "good") {
-        out.push({ area: "Account", severity: "strength", title: `${label} ${row.kpi} ${row.you} - at or above the ${row.standard} benchmark`, body: row.kpi === "CTR" ? "Your ads match what people are looking for. Keep the winning lines and test new ones against them, rather than replacing them." : "Clicks are turning into conversions, which means the ad and the page agree. Reuse this page layout for other products." });
+        out.push({ area: "Account", severity: "strength", title: `${label} ${row.kpi} ${row.you} - at or above the ${row.standard} benchmark`, body: row.kpi === "CTR" ? "Your ads match what people are looking for. Keep the winning lines and test new ones against them, rather than replacing them." : "Clicks are turning into purchases, which means the ad and the page agree. Reuse this page layout for other products." });
       } else {
-        out.push({ area: "Account", severity: row.verdict === "bad" ? "issue" : "warning", title: `${label} ${row.kpi} ${row.you} - below the ${row.standard} benchmark`, body: row.kpi === "CTR" ? `People see these ads but don't click. Likely cause: broad targeting or a generic message. Fix: ${score.channel === "SHOPPING" ? "improve product titles and images in your feed, and check your prices against competitors" : "put the offer and main keyword in the first headline, and add negative keywords"}.` : "Clicks aren't turning into sales. Likely cause: the page doesn't match the ad, loads slowly on mobile, or the offer is weak. Fix: open your landing pages on a phone, then check the Landing Pages tab for the worst ones." });
+        out.push({ area: "Account", severity: row.verdict === "bad" ? "issue" : "warning", title: `${label} ${row.kpi} ${row.you} - below the ${row.standard} benchmark`, body: row.kpi === "CTR" ? `People see these ads but don't click. Likely cause: broad targeting or a generic message. Fix: ${CTR_FIX[score.channel] ?? "put the offer and main keyword in the first headline, and add negative keywords"}.` : "Clicks aren't turning into sales. Likely cause: the page doesn't match the ad, loads slowly on mobile, or the offer is weak. Fix: open your landing pages on a phone, then check the Landing Pages tab for the worst ones." });
       }
     }
   }
 
-  if (o.prev && o.prev.spend > 0) {
-    const p = o.prev;
-    if (p.roas > 0 && t.roas > 0) {
-      const change = ((t.roas - p.roas) / p.roas) * 100;
-      if (change <= -20) out.push({ area: "Account", severity: "warning", title: `ROAS fell ${Math.abs(change).toFixed(0)}% from the previous period`, body: `It went from ${p.roas.toFixed(2)}x to ${t.roas.toFixed(2)}x. Common causes: higher auction costs, tired ads, or budget moved into weaker campaigns. Compare the campaigns below, and check for recent changes in Google Ads > Change history.` });
-      else if (change >= 20) out.push({ area: "Account", severity: "strength", title: `ROAS improved ${change.toFixed(0)}% from the previous period`, body: `It went from ${p.roas.toFixed(2)}x to ${t.roas.toFixed(2)}x. Whatever changed recently is working, so note it before making more changes, and keep them small so you can tell what caused what.` });
-    }
-    if (t.spend > p.spend * 1.1 && t.conversions < p.conversions) {
-      out.push({ area: "Account", severity: "issue", impact: t.spend - p.spend, impactLabel: "extra spend, fewer results", title: "Spending more but getting fewer conversions", body: `Spend rose ${(((t.spend - p.spend) / p.spend) * 100).toFixed(0)}% while conversions fell from ${Math.round(p.conversions)} to ${Math.round(t.conversions)}. New budget is reaching weaker traffic. Fix: roll back the most recent budget increase, then review search terms for irrelevant traffic.` });
+  const salesPrev = o.prevByObjective.SALES;
+  if (groups.some(g => g.objective === "SALES") && salesPrev && salesPrev.roas > 0 && sales.roas > 0) {
+    const change = ((sales.roas - salesPrev.roas) / salesPrev.roas) * 100;
+    if (change <= -20) out.push({ area: "Account", severity: "warning", title: `Sales ROAS fell ${Math.abs(change).toFixed(0)}% from the previous period`, body: `It went from ${salesPrev.roas.toFixed(2)}x to ${sales.roas.toFixed(2)}x. Common causes: higher auction costs, tired ads, or budget moved into weaker campaigns. Compare the campaigns below, and check for recent changes in Google Ads > Change history.` });
+    else if (change >= 20) out.push({ area: "Account", severity: "strength", title: `Sales ROAS improved ${change.toFixed(0)}% from the previous period`, body: `It went from ${salesPrev.roas.toFixed(2)}x to ${sales.roas.toFixed(2)}x. Whatever changed recently is working, so note it before making more changes, and keep them small so you can tell what caused what.` });
+  }
+  for (const { objective, list } of groups) {
+    const p = o.prevByObjective[objective];
+    const m = sumMetrics(list);
+    if (objective !== "OTHER" && p && p.spend > 0 && m.spend > p.spend * 1.1 && m.conversions < p.conversions) {
+      const word = noun(objective);
+      out.push({ area: "Account", severity: "issue", impact: m.spend - p.spend, impactLabel: "extra spend, fewer results", title: `${OBJECTIVE_LABEL[objective]} campaigns: spending more but getting fewer ${word}`, body: `Spend rose ${(((m.spend - p.spend) / p.spend) * 100).toFixed(0)}% while ${word} fell from ${Math.round(p.conversions)} to ${Math.round(m.conversions)}. New budget is reaching weaker traffic. Fix: roll back the most recent budget increase, then review search terms for irrelevant traffic.` });
     }
   }
 
-  if (o.optimizationScore !== null && o.optimizationScore < 70) {
+  if (filter === "ALL" && o.optimizationScore !== null && o.optimizationScore < 70) {
     out.push({ area: "Account", severity: "warning", title: `Google optimization score ${o.optimizationScore.toFixed(0)}%`, body: "Google thinks there are setup gaps. Treat the score as a checklist rather than a profit measure: its suggestions often increase spend. Accept the fixes that add tracking or ad variety, and be careful with ones that only raise budgets." });
   }
 
-  for (const c of o.campaigns) out.push(...diagnoseCampaign(c, ctx));
+  // Waste and "cheaper than average" only mean something among campaigns chasing the same goal.
+  for (const { objective, list } of groups) {
+    const ctx = ctxFrom(cur, list);
+    for (const c of list) out.push(...diagnoseCampaign(c, ctx, noun(objective)));
+  }
   return out;
 }
 
-function diagnoseCampaign(c: Campaign, ctx: Ctx): Diag[] {
+function diagnoseCampaign(c: Campaign, ctx: Ctx, word: string): Diag[] {
   const out: Diag[] = [];
+  if (c.status === "REMOVED") return out;
   const { cur } = ctx;
-  const sales = isSalesChannel(c.channel);
+  const sales = c.objective === "SALES";
+  const leads = c.objective === "LEADS";
 
-  if (sales && c.spend >= ctx.wasteBar && c.conversions === 0 && ctx.spend > 0) {
-    out.push({ area: "Campaigns", severity: "issue", impact: c.spend, impactLabel: "spent, 0 conversions", title: `"${c.name}" spent ${money(cur, c.spend)} with 0 conversions`, body: "It has spent enough that it should have converted by now. Likely cause: the wrong audience or a landing page mismatch. Fix: check its search terms, and pause it if they aren't relevant." });
+  if ((sales || leads) && c.spend >= ctx.wasteBar && c.conversions === 0 && ctx.spend > 0) {
+    out.push({ area: "Campaigns", severity: "issue", impact: c.spend, impactLabel: `spent, 0 ${word}`, title: `"${c.name}" spent ${money(cur, c.spend)} with 0 ${word}`, body: "It has spent enough that it should have delivered by now. Likely cause: the wrong audience or a landing page mismatch. Fix: check its search terms, and pause it if they aren't relevant." });
   } else if (sales && c.convValue > 0 && c.roas < 1 && c.spend >= ctx.wasteBar) {
     out.push({ area: "Campaigns", severity: "issue", impact: c.spend - c.convValue, impactLabel: "spent more than it earned", title: `"${c.name}" earns less than it spends (ROAS ${c.roas.toFixed(2)}x)`, body: `Every ${sym(cur)}1 spent returns less than ${sym(cur)}1 in sales, before product costs. Fix: cut its budget by half, remove poor keywords and products, and move that money to your best campaign.` });
   } else if (sales && c.convValue > 0 && c.roas >= ROAS_TARGET && c.conversions >= 3) {
-    out.push({ area: "Campaigns", severity: "strength", title: `"${c.name}" is working - ROAS ${c.roas.toFixed(2)}x`, body: `${Math.round(c.conversions)} conversions at ${money(cur, c.cpa)} each. Keep it funded, and raise its budget about 20% at a time while ROAS holds.` });
+    out.push({ area: "Campaigns", severity: "strength", title: `"${c.name}" is working - ROAS ${c.roas.toFixed(2)}x`, body: `${Math.round(c.conversions)} ${word} at ${money(cur, c.cpa)} each. Keep it funded, and raise its budget about 20% at a time while ROAS holds.` });
+  } else if (leads && c.conversions >= 3 && c.cpa <= ctx.cpa) {
+    out.push({ area: "Campaigns", severity: "strength", title: `"${c.name}" brings ${word} at or below your average cost`, body: `${Math.round(c.conversions)} ${word} at ${money(cur, c.cpa)} each, against your ${money(cur, ctx.cpa)} average. Check the lead quality with your sales team, then raise its budget about 20% at a time.` });
   }
 
-  if (c.searchBudgetLost !== null && c.searchBudgetLost >= 10) {
+  if (sales && c.searchBudgetLost !== null && c.searchBudgetLost >= 10) {
     if (c.convValue > 0 && c.roas >= ROAS_TARGET) {
       // Rough estimate: value grows in step with extra eligible impressions. Capped at today's value.
       const share = c.searchIS && c.searchIS > 9.99 ? c.searchIS : null;
@@ -423,10 +711,10 @@ function diagnoseCampaign(c: Campaign, ctx: Ctx): Diag[] {
   }
 
   if (c.searchRankLost !== null && c.searchRankLost >= 30 && c.spend >= ctx.wasteBar) {
-    out.push({ area: "Campaigns", severity: "warning", title: `"${c.name}" loses ${c.searchRankLost.toFixed(0)}% of searches on ad rank`, body: "Competitors outrank it even when budget is available. More budget won't fix this. Fix: raise Quality Score with closer keyword-to-ad matching and better landing pages, or raise the bid or lower the target ROAS if the margin allows." });
+    out.push({ area: "Campaigns", severity: "warning", title: `"${c.name}" loses ${c.searchRankLost.toFixed(0)}% of searches on ad rank`, body: `Competitors outrank it even when budget is available. More budget won't fix this. Fix: raise Quality Score with closer keyword-to-ad matching and better landing pages${sales ? ", or raise the bid or lower the target ROAS if the margin allows" : ", or raise the bid if the margin allows"}.` });
   }
 
-  if (c.targetRoas && c.convValue > 0 && c.roas < c.targetRoas * 0.8 && c.spend >= ctx.wasteBar) {
+  if (sales && c.targetRoas && c.convValue > 0 && c.roas < c.targetRoas * 0.8 && c.spend >= ctx.wasteBar) {
     out.push({ area: "Campaigns", severity: "warning", title: `"${c.name}" misses its target ROAS`, body: `The target is ${c.targetRoas.toFixed(2)}x and it's delivering ${c.roas.toFixed(2)}x. If it's new, give it about 2 weeks to learn. Otherwise check whether the target is realistic, and whether conversion values are being reported correctly.` });
   }
   return out;

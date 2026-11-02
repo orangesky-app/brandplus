@@ -4,7 +4,7 @@ import { Users } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
-  DiagPanel, EmptyNote, GadsGate, GadsHeader, Judged, Pills, PartialNotice, useGadsSection,
+  DiagPanel, EmptyNote, GadsGate, GadsHeader, GoogleCountNote, Judged, Pills, PartialNotice, useGadsSection,
 } from "@/components/gads/shared";
 import {
   diagnoseAudience, judgeRoas, money, rankDiags,
@@ -157,6 +157,7 @@ export default function GadsAudiencePage() {
         title="Audience & Timing"
         subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}` : "Devices, networks, age, gender, locations and hours"}
       />
+      <GoogleCountNote />
       <GadsGate state={state}>{d => <AudienceView d={d} />}</GadsGate>
     </div>
   );

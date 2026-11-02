@@ -3,8 +3,8 @@ import { kv } from "@vercel/kv";
 import { getGoogleAccessToken, GADS_API, classifyGadsError, type GadsApiError } from "@/lib/google";
 import { getGadsRefreshToken, getGadsCustomerId, getAuthorizedShop } from "@/lib/session";
 import {
-  channelOf, derive, sumMetrics, titleCase,
-  type AdCopy, type AdRow, type AssetRow, type GMetrics, type HeatRow, type SegmentRow, type SearchTermRow,
+  channelOf, countForObjective, derive, detectObjective, rollDaily, sumMetrics, titleCase,
+  type AdCopy, type AdRow, type AssetRow, type Campaign, type DailyRow, type GMetrics, type GoalCount, type GoalResult, type HeatRow, type Objective, type ObjectiveDaily, type SegmentRow, type SearchTermRow,
 } from "@/lib/gads-analysis";
 
 const DEV_TOKEN = process.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? "";
@@ -115,24 +115,48 @@ const AGE_LABEL: Record<string, string> = {
   AGE_RANGE_45_54: "45-54", AGE_RANGE_55_64: "55-64", AGE_RANGE_65_UP: "65+", AGE_RANGE_UNDETERMINED: "Unknown",
 };
 
+function goalRow(r: Row): GoalResult {
+  const m = r.metrics ?? {};
+  return {
+    category: String(r.segments?.conversionActionCategory ?? ""), conversions: num(m.conversions), value: num(m.conversionsValue),
+    allConversions: num(m.allConversions), allValue: num(m.allConversionsValue),
+  };
+}
+
+function groupRows<T>(rows: Row[], key: (r: Row) => string, value: (r: Row) => T) {
+  const groups = new Map<string, T[]>();
+  for (const r of rows) groups.set(key(r), [...(groups.get(key(r)) ?? []), value(r)]);
+  return groups;
+}
+
+const withCount = (m: GMetrics, c: GoalCount) =>
+  derive({ impressions: m.impressions, clicks: m.clicks, spend: m.spend, conversions: c.conversions, convValue: c.convValue });
+
 async function buildOverview(token: string, id: string, from: string, to: string, dateFilter: string) {
   const prevPeriod = shiftedPeriod(from, to);
+  const prevFilter = `segments.date BETWEEN '${prevPeriod.from}' AND '${prevPeriod.to}'`;
+  const goalFields = "campaign.id, segments.conversion_action_category, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value";
   const { rows, errors, total } = await runQueries(token, id, {
     totals: `SELECT ${METRICS}, metrics.all_conversions, metrics.view_through_conversions FROM customer WHERE ${dateFilter}`,
-    previous: `SELECT ${METRICS} FROM customer WHERE segments.date BETWEEN '${prevPeriod.from}' AND '${prevPeriod.to}'`,
-    daily: `SELECT segments.date, ${METRICS} FROM customer WHERE ${dateFilter} ORDER BY segments.date ASC`,
+    previous: `SELECT campaign.id, campaign.name, campaign.advertising_channel_type, campaign.bidding_strategy_type, ${METRICS} FROM campaign WHERE ${prevFilter} AND metrics.impressions > 0`,
+    daily: `SELECT campaign.id, segments.date, ${METRICS} FROM campaign WHERE ${dateFilter} AND metrics.impressions > 0`,
+    // Removed campaigns stay in: their money was spent, so the totals have to include them.
     campaigns: `
       SELECT campaign.id, campaign.name, campaign.status, campaign.primary_status,
         campaign.advertising_channel_type, campaign.bidding_strategy_type,
         campaign.target_roas.target_roas, campaign.maximize_conversion_value.target_roas,
         campaign.target_cpa.target_cpa_micros, campaign.maximize_conversions.target_cpa_micros,
-        campaign_budget.amount_micros, ${METRICS},
+        campaign_budget.amount_micros, ${METRICS}, metrics.all_conversions, metrics.view_through_conversions,
         metrics.search_impression_share, metrics.search_budget_lost_impression_share,
         metrics.search_rank_lost_impression_share, metrics.search_top_impression_share,
         metrics.search_absolute_top_impression_share, metrics.content_impression_share
       FROM campaign
-      WHERE ${dateFilter} AND campaign.status != 'REMOVED' AND metrics.impressions > 0
+      WHERE ${dateFilter} AND metrics.impressions > 0
       ORDER BY metrics.cost_micros DESC`,
+    goals: "SELECT campaign.id, campaign_conversion_goal.category, campaign_conversion_goal.origin, campaign_conversion_goal.biddable FROM campaign_conversion_goal",
+    // Google won't return cost alongside the category segment, so results per goal are a separate query.
+    goalResults: `SELECT segments.date, ${goalFields} FROM campaign WHERE ${dateFilter}`,
+    goalResultsPrev: `SELECT ${goalFields} FROM campaign WHERE ${prevFilter}`,
     conversionActions: `
       SELECT segments.conversion_action_name, segments.conversion_action_category,
         metrics.conversions, metrics.conversions_value
@@ -155,35 +179,99 @@ async function buildOverview(token: string, id: string, from: string, to: string
     suggestionMap.set(type, item);
   }
 
+  // When the split per goal fails, every figure stays Google's own count and the page says so,
+  // rather than showing a false zero for every objective.
+  const counting = !errors.goalResults && !errors.campaigns;
+  const campaignId = (r: Row) => String(r.campaign?.id ?? "");
+  const goalsById = groupRows(rows.goals.filter(r => r.campaignConversionGoal?.biddable === true), campaignId, r => String(r.campaignConversionGoal?.category ?? ""));
+  const resultsById = groupRows(rows.goalResults, campaignId, goalRow);
+  const resultsByDay = groupRows(rows.goalResults, r => `${campaignId(r)}|${r.segments?.date ?? ""}`, goalRow);
+  const prevResultsById = groupRows(rows.goalResultsPrev, campaignId, goalRow);
+
+  const campaigns: Campaign[] = rows.campaigns.map(r => {
+    const c = r.campaign ?? {};
+    const m = r.metrics ?? {};
+    const targetRoas = c.targetRoas?.targetRoas ?? c.maximizeConversionValue?.targetRoas;
+    const targetCpa = c.targetCpa?.targetCpaMicros ?? c.maximizeConversions?.targetCpaMicros;
+    const cid = campaignId(r);
+    const name = c.name ?? "Unknown";
+    const channel = channelOf(c.advertisingChannelType);
+    const bidding = c.biddingStrategyType ?? "";
+    const results = resultsById.get(cid) ?? [];
+    const google = metricsOf(r);
+    const { objective, why } = detectObjective({ name, channel, bidding, goals: goalsById.get(cid) ?? [], results });
+    const count = countForObjective(counting ? objective : "OTHER", results, google);
+    return {
+      id: cid, name, status: c.status ?? "UNKNOWN",
+      primaryStatus: c.primaryStatus ?? "", channel,
+      bidding, dailyBudget: micros(r.campaignBudget?.amountMicros),
+      targetRoas: targetRoas ? num(targetRoas) : null,
+      targetCpa: targetCpa ? micros(targetCpa) : null,
+      searchIS: share(m.searchImpressionShare), searchBudgetLost: share(m.searchBudgetLostImpressionShare),
+      searchRankLost: share(m.searchRankLostImpressionShare), searchTopIS: share(m.searchTopImpressionShare),
+      searchAbsTopIS: share(m.searchAbsoluteTopImpressionShare), contentIS: share(m.contentImpressionShare),
+      objective, objectiveWhy: why, googleConversions: google.conversions, googleValue: google.convValue,
+      notCounted: count.notCounted, usedSecondary: count.usedSecondary,
+      allConversions: num(m.allConversions), viewThrough: num(m.viewThroughConversions),
+      ...withCount(google, count),
+    };
+  });
+  const known = new Map(campaigns.map(c => [c.id, c]));
+
+  const dailyGroups = new Map<Objective, DailyRow[]>();
+  for (const r of rows.daily) {
+    const cid = campaignId(r);
+    const date = r.segments?.date ?? "";
+    const campaign = known.get(cid);
+    const objective = campaign?.objective ?? "OTHER";
+    const google = metricsOf(r);
+    const count = countForObjective(counting ? objective : "OTHER", resultsByDay.get(`${cid}|${date}`) ?? [], google, campaign?.usedSecondary ?? false);
+    dailyGroups.set(objective, [...(dailyGroups.get(objective) ?? []), { date, ...withCount(google, count) }]);
+  }
+  // Rolled up per objective and day: one row per campaign per day could outgrow the cache entry.
+  const dailyByObjective: ObjectiveDaily[] = [...dailyGroups.entries()].flatMap(([objective, list]) => rollDaily(list).map(r => ({ ...r, objective })));
+
+  // Comparing Google's count with the counted goal would look like a change that never happened.
+  const canCompare = !errors.previous && !(counting && errors.goalResultsPrev);
+  const prevGroups = new Map<Objective, GMetrics[]>();
+  if (canCompare) {
+    for (const r of rows.previous) {
+      const c = r.campaign ?? {};
+      const cid = campaignId(r);
+      const results = prevResultsById.get(cid) ?? [];
+      const objective = known.get(cid)?.objective ?? detectObjective({
+        name: c.name ?? "", channel: channelOf(c.advertisingChannelType), bidding: c.biddingStrategyType ?? "",
+        goals: goalsById.get(cid) ?? [], results,
+      }).objective;
+      const google = metricsOf(r);
+      prevGroups.set(objective, [...(prevGroups.get(objective) ?? []), withCount(google, countForObjective(counting ? objective : "OTHER", results, google))]);
+    }
+  }
+  const prevByObjective: Partial<Record<Objective, GMetrics>> = {};
+  for (const [objective, list] of prevGroups) prevByObjective[objective] = sumMetrics(list);
+
+  const fromCampaigns = campaigns.length > 0;
+  const addUp = (f: (c: Campaign) => number) => campaigns.reduce((s, c) => s + f(c), 0);
+  const accountTotals = sumMetrics(rows.totals.map(metricsOf));
+
   return {
     errors,
     total,
     payload: {
       prevPeriod,
       totals: {
-        ...sumMetrics(rows.totals.map(metricsOf)),
-        allConversions: num(totalRow.metrics?.allConversions),
-        viewThrough: num(totalRow.metrics?.viewThroughConversions),
+        ...(fromCampaigns ? sumMetrics(campaigns) : accountTotals),
+        allConversions: fromCampaigns ? addUp(c => c.allConversions) : num(totalRow.metrics?.allConversions),
+        viewThrough: fromCampaigns ? addUp(c => c.viewThrough) : num(totalRow.metrics?.viewThroughConversions),
+        googleConversions: fromCampaigns ? addUp(c => c.googleConversions) : accountTotals.conversions,
+        googleValue: fromCampaigns ? addUp(c => c.googleValue) : accountTotals.convValue,
       },
-      prev: errors.previous ? null : sumMetrics(rows.previous.map(metricsOf)),
-      daily: rows.daily.map(r => ({ date: r.segments?.date ?? "", ...metricsOf(r) })),
-      campaigns: rows.campaigns.map(r => {
-        const c = r.campaign ?? {};
-        const m = r.metrics ?? {};
-        const targetRoas = c.targetRoas?.targetRoas ?? c.maximizeConversionValue?.targetRoas;
-        const targetCpa = c.targetCpa?.targetCpaMicros ?? c.maximizeConversions?.targetCpaMicros;
-        return {
-          id: String(c.id ?? ""), name: c.name ?? "Unknown", status: c.status ?? "UNKNOWN",
-          primaryStatus: c.primaryStatus ?? "", channel: channelOf(c.advertisingChannelType),
-          bidding: c.biddingStrategyType ?? "", dailyBudget: micros(r.campaignBudget?.amountMicros),
-          targetRoas: targetRoas ? num(targetRoas) : null,
-          targetCpa: targetCpa ? micros(targetCpa) : null,
-          searchIS: share(m.searchImpressionShare), searchBudgetLost: share(m.searchBudgetLostImpressionShare),
-          searchRankLost: share(m.searchRankLostImpressionShare), searchTopIS: share(m.searchTopImpressionShare),
-          searchAbsTopIS: share(m.searchAbsoluteTopImpressionShare), contentIS: share(m.contentImpressionShare),
-          ...metricsOf(r),
-        };
-      }),
+      prev: canCompare ? sumMetrics([...prevGroups.values()].flat()) : null,
+      prevByObjective,
+      daily: rollDaily(dailyByObjective),
+      dailyByObjective,
+      goalCounting: counting,
+      campaigns,
       conversionActions: rows.conversionActions
         .map(r => ({
           name: r.segments?.conversionActionName ?? "Unknown", category: r.segments?.conversionActionCategory ?? "",
@@ -488,7 +576,7 @@ export async function GET(req: NextRequest) {
   const isDate = /^\d{4}-\d{2}-\d{2}$/;
   if (!isDate.test(from) || !isDate.test(to)) return NextResponse.json({ error: "invalid_dates" }, { status: 400 });
 
-  const cacheKey = `cache:${shop}:gads-insights:v1:${customerId}:${section}:${from}:${to}`;
+  const cacheKey = `cache:${shop}:gads-insights:v2:${customerId}:${section}:${from}:${to}`;
   try {
     const cached = await kv.get(cacheKey);
     if (cached) return NextResponse.json(cached);

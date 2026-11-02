@@ -114,11 +114,27 @@ export function EmptyNote({ children }: { children: React.ReactNode }) {
   return <div className="py-8 text-center text-[16px] text-[#71717A] dark:text-[#A1A1AA]">{children}</div>;
 }
 
-export function BenchmarkNote() {
+export function Note({ children }: { children: React.ReactNode }) {
   return (
     <p className="flex items-start gap-1.5 text-[14px] text-[#71717A] dark:text-[#A1A1AA]">
-      <Info size={14} className="shrink-0 mt-0.5" /> {BENCHMARK_NOTE}
+      <Info size={14} className="shrink-0 mt-0.5" /> <span>{children}</span>
     </p>
+  );
+}
+
+export function BenchmarkNote() {
+  return <Note>{BENCHMARK_NOTE}</Note>;
+}
+
+// The Overview counts only the goal matching each objective. Ad, keyword and audience data can't
+// all be split the same way yet, so those pages say whose count they show.
+export function GoogleCountNote({ mixed }: { mixed?: boolean }) {
+  return (
+    <Note>
+      {mixed
+        ? "Campaign findings here count only the goal matching each objective. Ad, keyword and audience findings use Google's own count, which can include actions like Add to cart."
+        : "Conversions on this page are Google's own count, which can include actions like Add to cart. The Overview page counts only the goal matching each campaign's objective."}
+    </Note>
   );
 }
 

@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { ExternalLink, FileText } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import {
-  BenchmarkNote, DataTable, DiagPanel, EmptyNote, GadsGate, GadsHeader, Judged, Pills,
+  BenchmarkNote, DataTable, DiagPanel, EmptyNote, GadsGate, GadsHeader, GoogleCountNote, Judged, Pills,
   PartialNotice, VerdictBadge, useGadsSection, type Column,
 } from "@/components/gads/shared";
 import {
@@ -359,6 +359,7 @@ export default function GadsAdsPage() {
         title="Ads & Ad Copy"
         subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}` : "Ad-wise results, full copy, products and landing pages"}
       />
+      <GoogleCountNote />
       <GadsGate state={state}>{d => <AdsView d={d} />}</GadsGate>
     </div>
   );
