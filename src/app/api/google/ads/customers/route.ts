@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGoogleAccessToken, GADS_API } from "@/lib/google";
+import { getGoogleAccessToken, GADS_API, classifyGadsError, type GadsApiError } from "@/lib/google";
 import { getGadsRefreshToken, getGadsCustomerId, getAuthorizedShop, requireShopPermission } from "@/lib/session";
 import { shopKv } from "@/lib/kv";
 import { canManageAccounts, connectorLabel } from "@/lib/connector";
@@ -60,18 +60,15 @@ export async function GET(req: NextRequest) {
         },
       }
     );
-    const listData = await listRes.json() as { resourceNames?: string[]; error?: { message?: string; status?: string } };
+    const listData = await listRes.json() as { resourceNames?: string[]; error?: GadsApiError };
 
-    // Test token returns PERMISSION_DENIED - fall back to manual entry mode
+    // Listing failed - report Google's actual reason and fall back to manual entry mode
     if (listData.error) {
-      const msg = listData.error.message ?? "";
-      const isTestToken = listRes.status === 403 || listRes.status === 401 ||
-        msg.toLowerCase().includes("test") ||
-        msg.toLowerCase().includes("permission") ||
-        listData.error.status === "PERMISSION_DENIED";
+      const { kind, reason, detail } = classifyGadsError(listData.error);
       return NextResponse.json({
-        error: isTestToken ? "test_token" : "no_customers",
-        detail: msg,
+        error: kind,
+        reason,
+        detail,
         savedCustomerId,          // still return saved ID so UI can show it
       });
     }
@@ -96,7 +93,7 @@ export async function GET(req: NextRequest) {
         return {
           id,
           name: row?.descriptiveName ?? `Account ${id}`,
-          currency: row?.currencyCode ?? "USD",
+          currency: row?.currencyCode ?? "",   // unknown if the details query failed - don't claim USD
         };
       })
     );

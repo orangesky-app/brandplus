@@ -44,6 +44,7 @@ function ConnectionsContent() {
   const [selectedGads, setSelectedGads] = useState("");
   const [gadsSaved, setGadsSaved] = useState(false);
   const [gadsError, setGadsError] = useState<string | null>(null);
+  const [gadsErrorDetail, setGadsErrorDetail] = useState("");
 
   // Meta
   const [metaConnected, setMetaConnected] = useState(false);
@@ -106,9 +107,10 @@ function ConnectionsContent() {
           setGadsSaved(!!d.savedCustomerId);
           return;
         }
-        // For test_token/no_customers, still restore any saved customer ID
+        // If listing failed, still restore any saved customer ID
         if (d.error) {
           setGadsError(d.error);
+          setGadsErrorDetail(d.detail ?? "");
           if (d.savedCustomerId) { setSelectedGads(d.savedCustomerId); setGadsSaved(true); }
           return;
         }
@@ -450,12 +452,18 @@ function ConnectionsContent() {
                 <div className="text-[15px] text-[#a05a00] bg-[#fff3e0] border border-[#ffcc80] rounded-lg px-3 py-2.5">
                   Add <code className="font-mono text-[14px]">GOOGLE_ADS_DEVELOPER_TOKEN</code> in Vercel environment variables to enable Google Ads.
                 </div>
-              ) : (gadsError === "test_token" || (gadsError && gadsCustomers.length === 0)) ? (
-                /* Test token mode - auto-detect blocked, allow manual entry */
+              ) : (gadsError && gadsCustomers.length === 0) ? (
+                /* Listing failed - show the real reason, allow manual entry */
                 <div className="space-y-2">
                   <div className="text-[15px] text-[#7a5a00] bg-[#fffbe6] border border-[#ffe58f] rounded-lg px-3 py-2.5">
-                    <div className="font-semibold mb-0.5">Account list not available yet</div>
-                    <div>Skylitee&apos;s Google Ads access is awaiting Google approval, so we can&apos;t list your ad accounts yet. Enter your Customer ID manually - find it in Google Ads → top-right account picker (e.g. <span className="font-mono">401-789-2231</span>).</div>
+                    <div className="font-semibold mb-0.5">Account list not available</div>
+                    <div>
+                      {gadsError === "test_token" ? "Skylitee doesn't have Google's full Google Ads API access yet, so we can't list your ad accounts." :
+                       gadsError === "api_disabled" ? "The Google Ads API is switched off in Skylitee's Google Cloud project, so we can't list your ad accounts. This is on Skylitee's side." :
+                       gadsError === "no_customers" ? "Google found no ad accounts for this login." :
+                       `Google returned an error: ${gadsErrorDetail || gadsError}`}
+                      {" "}You can enter your Customer ID manually - find it in Google Ads → top-right account picker (e.g. <span className="font-mono">401-789-2231</span>).
+                    </div>
                   </div>
                   <input
                     type="text"
@@ -485,7 +493,7 @@ function ConnectionsContent() {
                     className="w-full text-[17px] border border-black/[0.12] rounded-lg px-2.5 py-1.5 bg-white mb-2"
                   >
                     {gadsCustomers.map(a => (
-                      <option key={a.id} value={a.id}>{a.name} · ID {a.id} ({a.currency})</option>
+                      <option key={a.id} value={a.id}>{a.name} · ID {a.id}{a.currency ? ` (${a.currency})` : ""}</option>
                     ))}
                   </select>
                   <button

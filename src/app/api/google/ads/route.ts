@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { kv } from "@vercel/kv";
-import { getGoogleAccessToken, GADS_API } from "@/lib/google";
+import { getGoogleAccessToken, GADS_API, classifyGadsError, type GadsApiError } from "@/lib/google";
 import { getGadsRefreshToken, getGadsCustomerId, getAuthorizedShop } from "@/lib/session";
 
 const DEV_TOKEN = process.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? "";
@@ -23,7 +23,7 @@ interface GadsRow {
 
 interface GadsResponse {
   results?: GadsRow[];
-  error?: { message?: string; status?: string; code?: number };
+  error?: GadsApiError;
 }
 
 async function gadsSearch(accessToken: string, customerId: string, query: string): Promise<GadsResponse> {
@@ -40,14 +40,6 @@ async function gadsSearch(accessToken: string, customerId: string, query: string
     }
   );
   return res.json() as Promise<GadsResponse>;
-}
-
-function isTestTokenError(r: GadsResponse): boolean {
-  if (!r.error) return false;
-  const msg = (r.error.message ?? "").toLowerCase();
-  return r.error.status === "PERMISSION_DENIED" ||
-    msg.includes("test") || msg.includes("not approved") ||
-    r.error.code === 403;
 }
 
 const micros = (v?: string) => parseFloat(v ?? "0") / 1_000_000;
@@ -162,23 +154,13 @@ export async function GET(req: NextRequest) {
     const daily     = safe(dailyData);
     const keywords  = safe(keywordData);
 
-    // Detect test token - if the first query returns PERMISSION_DENIED, surface that
-    if (overview && isTestTokenError(overview as GadsResponse)) {
-      return NextResponse.json({
-        error: "test_token",
-        detail: (overview as GadsResponse).error?.message ?? "Developer token not approved for real accounts",
-      }, { status: 403 });
-    }
-
-    // Any other API error (expired/invalid token → UNAUTHENTICATED 401, INVALID_CUSTOMER_ID,
-    // RESOURCE_EXHAUSTED quota, version sunset) must NOT fall through to summed zeros - that
-    // reads as a real "no spend" account and would be cached for 15 min. Fail loudly instead.
+    // Any API error (test token, API disabled, no account access, expired token, quota, version
+    // sunset) must NOT fall through to summed zeros - that reads as a real "no spend" account and
+    // would be cached for 15 min. Fail loudly with Google's actual reason instead.
     if (!overview || (overview as GadsResponse).error) {
       const err = (overview as GadsResponse | null)?.error;
-      return NextResponse.json(
-        { error: "google_ads_api_error", detail: err?.message ?? "Google Ads overview query failed" },
-        { status: 502 }
-      );
+      const { kind, reason, detail } = classifyGadsError(err ?? { message: "Google Ads overview query failed" });
+      return NextResponse.json({ error: kind, reason, detail }, { status: kind === "google_ads_api_error" ? 502 : 403 });
     }
 
     // Overview aggregates (sum across all rows - customer query returns one row per date)

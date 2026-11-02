@@ -10,6 +10,37 @@ const GADS_SCOPE = "https://www.googleapis.com/auth/adwords";
 // v25 sunsets ~Aug 2027 - bump here (one place) before then. Schedule: developers.google.com/google-ads/api/docs/sunset-dates
 export const GADS_API = "https://googleads.googleapis.com/v25";
 
+export interface GadsApiError {
+  code?: number;
+  message?: string;
+  status?: string;
+  details?: {
+    reason?: string;
+    errors?: { errorCode?: Record<string, string>; message?: string }[];
+  }[];
+}
+
+export type GadsErrorKind = "test_token" | "api_disabled" | "no_account_access" | "google_ads_api_error";
+
+// Google's top-level message is often generic ("The caller does not have permission"). The real
+// reason sits in details[].errors[].errorCode (Ads) or details[].reason (Google Cloud). Never infer
+// "test token" from a bare 403: a disabled API and a login without account access both return 403.
+export function classifyGadsError(err: GadsApiError): { kind: GadsErrorKind; reason?: string; detail: string } {
+  const adsError = err.details?.flatMap(d => d.errors ?? [])[0];
+  const reason = (adsError?.errorCode && Object.values(adsError.errorCode)[0])
+    ?? err.details?.find(d => d.reason)?.reason;
+  const detail = adsError?.message ?? err.message ?? "Google Ads request failed";
+  const msg = detail.toLowerCase();
+
+  const kind: GadsErrorKind =
+    reason === "DEVELOPER_TOKEN_NOT_APPROVED" || msg.includes("test accounts") ? "test_token" :
+    reason === "SERVICE_DISABLED" || reason === "PROJECT_DISABLED" || msg.includes("has not been used in project") ? "api_disabled" :
+    reason === "USER_PERMISSION_DENIED" ? "no_account_access" :
+    "google_ads_api_error";
+
+  return { kind, reason, detail };
+}
+
 export type GoogleService = "gsc" | "ga4" | "gads" | "both";
 
 export function buildGoogleAuthUrl(state: string, service: GoogleService = "both"): string {

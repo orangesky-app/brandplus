@@ -51,8 +51,9 @@ function GadsContent() {
   const [data, setData]       = useState<GadsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState("");
 
-  const today      = new Date();
+  const today     = new Date();
   const defTo      = today.toISOString().split("T")[0];
   const defFrom    = new Date(today.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
   const [from, setFrom] = useState(searchParams.get("from") ?? defFrom);
@@ -63,12 +64,14 @@ function GadsContent() {
     setError(null);
     fetch(`/api/google/ads?from=${from}&to=${to}`)
       .then(r => r.json())
-      .then((d: GadsData & { error?: string }) => {
+      .then((d: GadsData & { error?: string; detail?: string }) => {
         if (d.error === "not_connected")                { setError("not_connected"); return; }
         if (d.error === "no_customer_selected")         { setError("no_customer");   return; }
         if (d.error === "google_ads_dev_token_missing") { setError("dev_token");     return; }
         if (d.error === "test_token")                   { setError("test_token");    return; }
-        if (d.error)                                    { setError("failed");        return; }
+        if (d.error === "api_disabled")                 { setError("api_disabled");  return; }
+        if (d.error === "no_account_access")            { setError("no_access");     return; }
+        if (d.error)                                    { setError("failed"); setErrorDetail(d.detail ?? ""); return; }
         setData(d);
       })
       .catch(() => setError("failed"))
@@ -148,22 +151,50 @@ function GadsContent() {
             </div>
             <div>
               <div className="text-[18px] font-semibold text-[#181816] mb-1">
-                Google Ads data pending - awaiting Google approval
+                Google Ads data isn&apos;t available yet
               </div>
               <div className="text-[16px] text-[#686864] space-y-2">
-                <p>Your account is connected. Skylitee&apos;s Google Ads API access is still being reviewed by Google, and Google does not allow reading live ad data until that review is approved.</p>
+                <p>Your account is connected. Skylitee doesn&apos;t have Google&apos;s full Google Ads API access yet, and Google blocks reading live ad data until it does.</p>
                 <p className="font-medium text-[#181816]">What&apos;s happening:</p>
                 <ul className="space-y-1 list-disc list-inside text-[15px]">
                   <li>Google account ✓ Connected</li>
                   <li>Customer ID ✓ Saved</li>
-                  <li>Ad data ✗ Waiting on Google approval</li>
+                  <li>Ad data ✗ Blocked until Google grants Skylitee access</li>
                 </ul>
                 <p className="text-[15px] bg-[#e8f5e9] border border-[#a5d6a7] rounded-lg px-3 py-2 text-[#1b5e20]">
-                  ✓ Nothing for you to do. Once Google approves Skylitee, your Google Ads data will load here automatically.
+                  ✓ No action needed on your account. This is on Skylitee&apos;s side, and your Google Ads data will load here automatically once Google grants access.
                 </p>
               </div>
             </div>
           </div>
+        </div>
+      </Card>
+    </div>
+  );
+
+  if (error === "api_disabled") return (
+    <div className="max-w-md mx-auto mt-12">
+      <Card>
+        <div className="p-6 text-center">
+          <AlertCircle size={32} className="text-amber-500 mx-auto mb-3" />
+          <div className="text-[19px] font-semibold mb-1">Google Ads API is switched off</div>
+          <div className="text-[16px] text-[#686864]">The Google Ads API is disabled in Skylitee&apos;s Google Cloud project. This is on Skylitee&apos;s side, not your account.</div>
+        </div>
+      </Card>
+    </div>
+  );
+
+  if (error === "no_access") return (
+    <div className="max-w-md mx-auto mt-12">
+      <Card>
+        <div className="p-6 text-center">
+          <AlertCircle size={32} className="text-amber-500 mx-auto mb-3" />
+          <div className="text-[19px] font-semibold mb-1">This Google login can&apos;t read that ad account</div>
+          <div className="text-[16px] text-[#686864] mb-4">Reconnect Google Ads with a login that has access to this account, or choose a different account.</div>
+          <a href="/dashboard/connections"
+            className="inline-block px-5 py-2.5 bg-[#34A853] text-white rounded-xl text-[16px] font-semibold hover:bg-[#2d9248] transition-colors">
+            Go to Connections
+          </a>
         </div>
       </Card>
     </div>
@@ -175,7 +206,7 @@ function GadsContent() {
         <div className="p-6 text-center">
           <AlertCircle size={32} className="text-red-500 mx-auto mb-3" />
           <div className="text-[19px] font-semibold mb-1">Could not load Google Ads data</div>
-          <div className="text-[16px] text-[#686864]">Check your connection in Settings → Connections.</div>
+          <div className="text-[16px] text-[#686864]">{errorDetail ? `Google said: ${errorDetail}` : "Check your connection in Settings → Connections."}</div>
         </div>
       </Card>
     </div>

@@ -3,7 +3,7 @@ import { shopifyFetchAll, fetchOrdersInRange, orderRevenue, resolveShopifyPeriod
 import { NextRequest } from "next/server";
 import { getShopifySession } from "@/lib/session";
 import { shopKv } from "@/lib/kv";
-import { getGoogleAccessToken, GADS_API } from "@/lib/google";
+import { getGoogleAccessToken, GADS_API, classifyGadsError, type GadsApiError } from "@/lib/google";
 import { plainDashes } from "@/lib/utils";
 
 const GADS_DEV_TOKEN = process.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? "";
@@ -259,11 +259,14 @@ async function buildGadsContext(shop: string): Promise<string> {
     );
     const data = await res.json() as {
       results?: { metrics?: { impressions?: string; clicks?: string; costMicros?: string; conversions?: string; conversionsValue?: string; ctr?: string } }[];
-      error?: { status?: string; message?: string };
+      error?: GadsApiError;
     };
 
-    if (data.error?.status === "PERMISSION_DENIED") {
-      return "Google Ads: connected but developer token pending production approval.";
+    if (data.error) {
+      const { kind, reason, detail } = classifyGadsError(data.error);
+      return kind === "test_token"
+        ? "Google Ads: connected but developer token pending production approval."
+        : `Google Ads: connected but data could not be loaded (${reason ?? detail}).`;
     }
 
     let totalImpressions = 0, totalClicks = 0, totalCost = 0, totalConversions = 0, totalConvValue = 0;
