@@ -14,6 +14,7 @@ import {
   Plug, ChevronDown, UserCircle,
   X, ShieldCheck, CreditCard, Plus,
   FileText, TrendingUp, BarChart3, DollarSign, HelpCircle, FilePlus, Binoculars,
+  KeyRound, ListChecks,
 } from "lucide-react";
 import { SkyLiteeLogo } from "@/components/ui/skylitee-logo";
 import { isEmbedded } from "@/lib/embedded-client";
@@ -64,10 +65,20 @@ const navSections: NavSection[] = [
     ],
   },
   {
+    label: "Google Ads",
+    tooltip: "Google Ads analytics - every KPI against industry benchmarks, ad-wise results and copy, keywords, audiences, and ranked recommendations.",
+    items: [
+      { href: "/dashboard/gads", label: "Overview", icon: Megaphone, badge: null, dot: "google_gads" },
+      { href: "/dashboard/gads/ads", label: "Ads & Ad Copy", icon: FileText, badge: { text: "New", color: "orange" }, dot: "google_gads" },
+      { href: "/dashboard/gads/keywords", label: "Keywords & Searches", icon: KeyRound, badge: { text: "New", color: "orange" }, dot: "google_gads" },
+      { href: "/dashboard/gads/audience", label: "Audience & Timing", icon: Users, badge: { text: "New", color: "orange" }, dot: "google_gads" },
+      { href: "/dashboard/gads/actions", label: "Recommendations", icon: ListChecks, badge: { text: "New", color: "orange" }, dot: "google_gads" },
+    ],
+  },
+  {
     label: "Google",
     tooltip: "Google Search Console (SEO, keywords, sitemaps) and GA4 (website traffic, ecommerce, user behavior).",
     items: [
-      { href: "/dashboard/gads", label: "Google Ads", icon: Megaphone, badge: null, dot: "google_gads" },
       { href: "/dashboard/gsc", label: "Search Console", icon: Search, badge: null, dot: "google_gsc" },
       { href: "/dashboard/ga4", label: "Analytics GA4", icon: LineChart, badge: null, dot: "google_ga4" },
     ],

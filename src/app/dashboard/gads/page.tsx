@@ -1,396 +1,271 @@
 "use client";
-import { useState, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useMemo } from "react";
+import Link from "next/link";
 import {
-  ComposedChart, Bar, Line, XAxis, YAxis,
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis,
   Tooltip as RTooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
-import {
-  Megaphone, TrendingUp, MousePointer, Eye, Target,
-  DollarSign, Zap, BarChart2, Search, AlertCircle,
-} from "lucide-react";
+import { ArrowRight, Megaphone } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
+import { Donut } from "@/components/ui/charts";
+import {
+  BenchmarkNote, DataTable, DiagPanel, EmptyNote, GadsGate, GadsHeader, Judged, KpiTile,
+  PartialNotice, VerdictBadge, pctChange, useGadsSection, type Column,
+} from "@/components/gads/shared";
+import {
+  buildScorecard, CHANNEL_COLOR, CHANNEL_LABEL, diagnoseOverview, judgeAgainst, judgeLost, judgeRoas,
+  judgeShare, BENCHMARKS, money, rankDiags, shareText, sym, titleCase,
+  type Campaign, type ConversionAction, type OverviewData,
+} from "@/lib/gads-analysis";
 
-interface GadsKpis {
-  spend: number; clicks: number; impressions: number;
-  conversions: number; conversionValue: number;
-  roas: number; avgCpc: number; ctr: number; costPerConversion: number;
+const QUERY_LABELS: Record<string, string> = {
+  totals: "Account totals", previous: "Previous period comparison", daily: "Daily trend", campaigns: "Campaigns",
+  conversionActions: "Conversion actions", suggestions: "Google's own suggestions",
+};
+
+const CHART_TOOLTIP = {
+  contentStyle: { background: "#18181B", border: "none", borderRadius: 8, fontSize: 13 },
+  labelStyle: { color: "#fff" },
+  itemStyle: { color: "#fff" },
+};
+
+// Google gives each campaign's share separately. To estimate an account figure, each is weighted
+// by the searches it was eligible for (impressions / share).
+function accountShares(campaigns: Campaign[]) {
+  const search = campaigns.filter(c => c.searchIS !== null && c.searchIS > 0);
+  if (search.length === 0) return null;
+  let eligible = 0, shown = 0, budget = 0, rank = 0;
+  for (const c of search) {
+    const e = c.impressions / ((c.searchIS as number) / 100);
+    eligible += e;
+    shown += c.impressions;
+    budget += e * (c.searchBudgetLost ?? 0);
+    rank += e * (c.searchRankLost ?? 0);
+  }
+  if (eligible <= 0) return null;
+  return { share: (shown / eligible) * 100, budgetLost: budget / eligible, rankLost: rank / eligible };
 }
-interface Campaign {
-  id: string; name: string; status: string;
-  impressions: number; clicks: number; spend: number;
-  conversions: number; conversionValue: number;
-  ctr: number; avgCpc: number; roas: number;
-}
-interface DailyRow {
-  date: string; impressions: number; clicks: number;
-  spend: number; conversions: number; convValue: number;
-}
-interface Keyword {
-  keyword: string; impressions: number; clicks: number;
-  spend: number; conversions: number; ctr: number; avgCpc: number;
-}
-interface GadsData {
-  account: string; currency: string;
-  period: { startDate: string; endDate: string };
-  kpis: GadsKpis;
-  campaigns: Campaign[];
-  daily: DailyRow[];
-  keywords: Keyword[];
-}
 
-function sym(code: string) {
-  return code === "INR" ? "₹" : code === "USD" ? "$" : code === "EUR" ? "€" : `${code} `;
-}
-function fmtMoney(n: number, cur: string) {
-  return `${sym(cur)}${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
-}
-
-function GadsContent() {
-  const searchParams = useSearchParams();
-  const [data, setData]       = useState<GadsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
-  const [errorDetail, setErrorDetail] = useState("");
-
-  const today     = new Date();
-  const defTo      = today.toISOString().split("T")[0];
-  const defFrom    = new Date(today.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-  const [from, setFrom] = useState(searchParams.get("from") ?? defFrom);
-  const [to,   setTo]   = useState(searchParams.get("to")   ?? defTo);
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetch(`/api/google/ads?from=${from}&to=${to}`)
-      .then(r => r.json())
-      .then((d: GadsData & { error?: string; detail?: string }) => {
-        if (d.error === "not_connected")                { setError("not_connected"); return; }
-        if (d.error === "no_customer_selected")         { setError("no_customer");   return; }
-        if (d.error === "google_ads_dev_token_missing") { setError("dev_token");     return; }
-        if (d.error === "test_token")                   { setError("test_token");    return; }
-        if (d.error === "api_disabled")                 { setError("api_disabled");  return; }
-        if (d.error === "no_account_access")            { setError("no_access");     return; }
-        if (d.error)                                    { setError("failed"); setErrorDetail(d.detail ?? ""); return; }
-        setData(d);
-      })
-      .catch(() => setError("failed"))
-      .finally(() => setLoading(false));
-  }, [from, to]);
-
-  const c = data?.currency ?? "USD";
-
-  /* ── Loading ──────────────────────────────────────────────────────── */
-  if (loading) return (
-    <div className="flex items-center justify-center py-24 text-[17px] text-[#686864]">
-      <div className="flex items-center gap-2">
-        <div className="w-4 h-4 border-2 border-[#34A853] border-t-transparent rounded-full animate-spin" />
-        Loading Google Ads data…
-      </div>
-    </div>
-  );
-
-  /* ── Error states ─────────────────────────────────────────────────── */
-  if (error === "not_connected") return (
-    <div className="max-w-md mx-auto mt-12">
-      <Card>
-        <div className="p-6 text-center">
-          <Megaphone size={32} className="text-[#34A853] mx-auto mb-3" />
-          <div className="text-[19px] font-semibold text-[#181816] mb-1">Google Ads not connected</div>
-          <div className="text-[16px] text-[#686864] mb-4">
-            Connect your Google Ads account to track campaign spend, ROAS, and keyword performance.
-          </div>
-          <a href="/api/auth/google?service=gads"
-            className="inline-block px-5 py-2.5 bg-[#34A853] text-white rounded-xl text-[16px] font-semibold hover:bg-[#2d9248] transition-colors">
-            Connect Google Ads
-          </a>
-        </div>
-      </Card>
-    </div>
-  );
-
-  if (error === "no_customer") return (
-    <div className="max-w-md mx-auto mt-12">
-      <Card>
-        <div className="p-6 text-center">
-          <AlertCircle size={32} className="text-amber-500 mx-auto mb-3" />
-          <div className="text-[19px] font-semibold text-[#181816] mb-1">Select your Google Ads account</div>
-          <div className="text-[16px] text-[#686864] mb-4">
-            Connected - but no account selected. Pick one in Connections.
-          </div>
-          <a href="/dashboard/connections"
-            className="inline-block px-5 py-2.5 bg-[#34A853] text-white rounded-xl text-[16px] font-semibold hover:bg-[#2d9248] transition-colors">
-            Go to Connections
-          </a>
-        </div>
-      </Card>
-    </div>
-  );
-
-  if (error === "dev_token") return (
-    <div className="max-w-md mx-auto mt-12">
-      <Card>
-        <div className="p-6 text-center">
-          <AlertCircle size={32} className="text-red-500 mx-auto mb-3" />
-          <div className="text-[19px] font-semibold text-[#181816] mb-2">Google Ads API not configured</div>
-          <div className="text-[16px] text-[#686864]">
-            Add <code className="bg-[#f5f5f4] px-1 rounded text-[15px]">GOOGLE_ADS_DEVELOPER_TOKEN</code> in Vercel environment variables.
+function campaignColumns(cur: string): Column<Campaign>[] {
+  return [
+    {
+      key: "name", label: "Campaign", sort: c => c.name,
+      render: c => (
+        <div className="min-w-[180px] max-w-[280px]">
+          <div className="font-medium truncate" title={c.name}>{c.name}</div>
+          <div className="flex items-center gap-1.5 text-[14px] text-[#71717A] dark:text-[#A1A1AA]">
+            <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: CHANNEL_COLOR[c.channel] }} />
+            {CHANNEL_LABEL[c.channel]}{c.status !== "ENABLED" && ` · ${titleCase(c.status)}`}
           </div>
         </div>
-      </Card>
-    </div>
-  );
-
-  if (error === "test_token") return (
-    <div className="max-w-lg mx-auto mt-12 space-y-3">
-      <Card>
-        <div className="p-6">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#fffbe6] border border-[#ffe58f] flex items-center justify-center shrink-0">
-              <AlertCircle size={20} className="text-amber-500" />
-            </div>
-            <div>
-              <div className="text-[18px] font-semibold text-[#181816] mb-1">
-                Google Ads data isn&apos;t available yet
-              </div>
-              <div className="text-[16px] text-[#686864] space-y-2">
-                <p>Your account is connected. Skylitee doesn&apos;t have Google&apos;s full Google Ads API access yet, and Google blocks reading live ad data until it does.</p>
-                <p className="font-medium text-[#181816]">What&apos;s happening:</p>
-                <ul className="space-y-1 list-disc list-inside text-[15px]">
-                  <li>Google account ✓ Connected</li>
-                  <li>Customer ID ✓ Saved</li>
-                  <li>Ad data ✗ Blocked until Google grants Skylitee access</li>
-                </ul>
-                <p className="text-[15px] bg-[#e8f5e9] border border-[#a5d6a7] rounded-lg px-3 py-2 text-[#1b5e20]">
-                  ✓ No action needed on your account. This is on Skylitee&apos;s side, and your Google Ads data will load here automatically once Google grants access.
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Card>
-    </div>
-  );
-
-  if (error === "api_disabled") return (
-    <div className="max-w-md mx-auto mt-12">
-      <Card>
-        <div className="p-6 text-center">
-          <AlertCircle size={32} className="text-amber-500 mx-auto mb-3" />
-          <div className="text-[19px] font-semibold mb-1">Google Ads API is switched off</div>
-          <div className="text-[16px] text-[#686864]">The Google Ads API is disabled in Skylitee&apos;s Google Cloud project. This is on Skylitee&apos;s side, not your account.</div>
-        </div>
-      </Card>
-    </div>
-  );
-
-  if (error === "no_access") return (
-    <div className="max-w-md mx-auto mt-12">
-      <Card>
-        <div className="p-6 text-center">
-          <AlertCircle size={32} className="text-amber-500 mx-auto mb-3" />
-          <div className="text-[19px] font-semibold mb-1">This Google login can&apos;t read that ad account</div>
-          <div className="text-[16px] text-[#686864] mb-4">Reconnect Google Ads with a login that has access to this account, or choose a different account.</div>
-          <a href="/dashboard/connections"
-            className="inline-block px-5 py-2.5 bg-[#34A853] text-white rounded-xl text-[16px] font-semibold hover:bg-[#2d9248] transition-colors">
-            Go to Connections
-          </a>
-        </div>
-      </Card>
-    </div>
-  );
-
-  if (error) return (
-    <div className="max-w-md mx-auto mt-12">
-      <Card>
-        <div className="p-6 text-center">
-          <AlertCircle size={32} className="text-red-500 mx-auto mb-3" />
-          <div className="text-[19px] font-semibold mb-1">Could not load Google Ads data</div>
-          <div className="text-[16px] text-[#686864]">{errorDetail ? `Google said: ${errorDetail}` : "Check your connection in Settings → Connections."}</div>
-        </div>
-      </Card>
-    </div>
-  );
-
-  if (!data) return null;
-
-  const k = data.kpis;
-
-  const kpiRow1 = [
-    { label: "Ad Spend",     value: fmtMoney(k.spend, c),                  icon: DollarSign,   color: "text-[#34A853]", bg: "bg-[#e8f5e9]" },
-    { label: "ROAS",         value: `${k.roas.toFixed(2)}x`,               icon: TrendingUp,   color: "text-[#4285F4]", bg: "bg-[#e3f0ff]" },
-    { label: "Conversions",  value: k.conversions.toLocaleString(),         icon: Target,       color: "text-[#E37400]", bg: "bg-[#fff3e0]" },
-    { label: "Conv. Value",  value: fmtMoney(k.conversionValue, c),        icon: Zap,          color: "text-[#9333ea]", bg: "bg-[#f3e8ff]" },
-    { label: "Clicks",       value: k.clicks.toLocaleString(),              icon: MousePointer, color: "text-[#34A853]", bg: "bg-[#e8f5e9]" },
+      ),
+    },
+    { key: "spend", label: "Spend", align: "right", sort: c => c.spend, render: c => money(cur, c.spend) },
+    { key: "value", label: "Conv. value", align: "right", sort: c => c.convValue, render: c => money(cur, c.convValue) },
+    {
+      key: "roas", label: "ROAS", align: "right", hint: "Conversion value divided by spend. 3x or more is good, under 2x is a concern.", sort: c => c.roas,
+      render: c => (c.convValue > 0 ? <Judged verdict={judgeRoas(c.roas)}>{c.roas.toFixed(2)}x</Judged> : "-"),
+    },
+    { key: "conv", label: "Conv.", align: "right", sort: c => c.conversions, render: c => c.conversions.toFixed(1) },
+    { key: "cpa", label: "Cost / conv.", align: "right", sort: c => c.cpa, render: c => (c.cpa > 0 ? money(cur, c.cpa) : "-") },
+    {
+      key: "ctr", label: "CTR", align: "right", hint: "Clicks divided by impressions, compared with the benchmark for this campaign type.", sort: c => c.ctr,
+      render: c => <Judged verdict={c.impressions >= 500 ? judgeAgainst(c.ctr, BENCHMARKS[c.channel].ctr) : "na"}>{c.ctr.toFixed(2)}%</Judged>,
+    },
+    {
+      key: "cvr", label: "Conv. rate", align: "right", hint: "Conversions divided by clicks, compared with the benchmark for this campaign type.", sort: c => c.cvr,
+      render: c => <Judged verdict={c.clicks >= 30 ? judgeAgainst(c.cvr, BENCHMARKS[c.channel].cvr) : "na"}>{c.cvr.toFixed(2)}%</Judged>,
+    },
+    { key: "cpc", label: "Avg CPC", align: "right", sort: c => c.cpc, render: c => money(cur, c.cpc, 2) },
+    {
+      key: "is", label: "Search share", align: "right", hint: "Share of eligible searches where your ad showed. Reported for Search campaigns.", sort: c => c.searchIS ?? -1,
+      render: c => <Judged verdict={judgeShare(c.searchIS)}>{shareText(c.searchIS)}</Judged>,
+    },
+    {
+      key: "lostB", label: "Lost: budget", align: "right", hint: "Searches missed because the daily budget ran out.", sort: c => c.searchBudgetLost ?? -1,
+      render: c => (c.searchBudgetLost === null ? "-" : <Judged verdict={judgeLost(c.searchBudgetLost)}>{c.searchBudgetLost.toFixed(1)}%</Judged>),
+    },
+    {
+      key: "lostR", label: "Lost: rank", align: "right", hint: "Searches missed because competitors outranked your ad, from bid and quality.", sort: c => c.searchRankLost ?? -1,
+      render: c => (c.searchRankLost === null ? "-" : <Judged verdict={judgeLost(c.searchRankLost)}>{c.searchRankLost.toFixed(1)}%</Judged>),
+    },
+    { key: "budget", label: "Daily budget", align: "right", sort: c => c.dailyBudget, render: c => (c.dailyBudget > 0 ? money(cur, c.dailyBudget) : "-") },
+    {
+      key: "bid", label: "Bidding", sort: c => c.bidding,
+      render: c => (
+        <span className="whitespace-nowrap text-[14px] text-[#52525B] dark:text-[#A1A1AA]">
+          {c.bidding ? titleCase(c.bidding) : "-"}
+          {c.targetRoas ? ` (${c.targetRoas.toFixed(2)}x)` : c.targetCpa ? ` (${money(cur, c.targetCpa)})` : ""}
+        </span>
+      ),
+    },
   ];
-  const kpiRow2 = [
-    { label: "Impressions",    value: k.impressions.toLocaleString(),       icon: Eye,       color: "text-[#4285F4]", bg: "bg-[#e3f0ff]" },
-    { label: "CTR",            value: `${k.ctr.toFixed(2)}%`,              icon: BarChart2, color: "text-[#E37400]", bg: "bg-[#fff3e0]" },
-    { label: "Avg CPC",        value: fmtMoney(k.avgCpc, c),               icon: DollarSign,color: "text-[#34A853]", bg: "bg-[#e8f5e9]" },
-    { label: "Cost / Conv.",   value: fmtMoney(k.costPerConversion, c),    icon: Target,    color: "text-[#ef4444]", bg: "bg-[#fce8e8]" },
+}
+
+function conversionColumns(cur: string): Column<ConversionAction>[] {
+  return [
+    { key: "name", label: "Conversion action", sort: a => a.name, render: a => <span className="font-medium">{a.name}</span> },
+    { key: "cat", label: "Type", sort: a => a.category, render: a => titleCase(a.category) },
+    { key: "conv", label: "Conversions", align: "right", sort: a => a.conversions, render: a => a.conversions.toFixed(1) },
+    { key: "value", label: "Value", align: "right", sort: a => a.value, render: a => money(cur, a.value) },
   ];
+}
+
+function Overview({ d }: { d: OverviewData }) {
+  const cur = d.currency;
+  const t = d.totals;
+  const p = d.prev;
+  const shares = useMemo(() => accountShares(d.campaigns), [d.campaigns]);
+  const scorecard = useMemo(() => buildScorecard(d.campaigns), [d.campaigns]);
+  const diags = useMemo(() => rankDiags(diagnoseOverview(d)), [d]);
+  const columns = useMemo(() => campaignColumns(cur), [cur]);
+  const convColumns = useMemo(() => conversionColumns(cur), [cur]);
+
+  if (t.impressions === 0 && d.campaigns.length === 0) {
+    return (
+      <>
+        <PartialNotice errors={d.errors} labels={QUERY_LABELS} />
+        <Card><EmptyNote>No Google Ads activity in this date range. Try a wider range from the date picker at the top.</EmptyNote></Card>
+      </>
+    );
+  }
+
+  const chartData = d.daily.map(r => ({ date: r.date.slice(5), Spend: Math.round(r.spend), "Conv. value": Math.round(r.convValue), Conversions: r.conversions }));
+  const mix = scorecard.map(s => ({ label: CHANNEL_LABEL[s.channel], value: s.spend, color: CHANNEL_COLOR[s.channel] }));
 
   return (
-    <div className="space-y-4">
+    <>
+      <PartialNotice errors={d.errors} labels={QUERY_LABELS} />
 
-      {/* Header + date picker */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h2 className="text-lg font-semibold flex items-center gap-2"><Megaphone size={18} className="text-[#F97316]" /> Google Ads</h2>
-          <p className="text-[17px] text-[#686864] mt-0.5">{data.account} · {sym(c)} currency</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)}
-            className="text-[16px] border border-black/[0.12] rounded-lg px-2.5 py-1.5 bg-white" />
-          <span className="text-[16px] text-[#686864]">→</span>
-          <input type="date" value={to} min={from} max={defTo} onChange={e => setTo(e.target.value)}
-            className="text-[16px] border border-black/[0.12] rounded-lg px-2.5 py-1.5 bg-white" />
-        </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <KpiTile label="Ad spend" value={money(cur, t.spend)} delta={pctChange(t.spend, p?.spend)} />
+        <KpiTile label="Conv. value" value={money(cur, t.convValue)} delta={pctChange(t.convValue, p?.convValue)} hint="Sale value Google attributes to your ads, by its own conversion tracking." />
+        <KpiTile label="ROAS" value={t.convValue > 0 ? `${t.roas.toFixed(2)}x` : "-"} delta={pctChange(t.roas, p?.roas)} verdict={t.convValue > 0 ? judgeRoas(t.roas) : "na"} hint="Conversion value divided by spend, across all campaign types. 3x or more is good, under 2x is a concern." />
+        <KpiTile label="Conversions" value={t.conversions.toFixed(1)} delta={pctChange(t.conversions, p?.conversions)} />
+        <KpiTile label="Cost / conv." value={t.cpa > 0 ? money(cur, t.cpa) : "-"} delta={pctChange(t.cpa, p?.cpa)} lowerIsBetter hint="Spend divided by conversions. Compared with your own previous period, because published benchmarks are in US dollars." />
+        <KpiTile label="Conv. rate" value={`${t.cvr.toFixed(2)}%`} delta={pctChange(t.cvr, p?.cvr)} hint="Conversions divided by clicks." />
+        <KpiTile label="Clicks" value={t.clicks.toLocaleString("en-IN")} delta={pctChange(t.clicks, p?.clicks)} />
+        <KpiTile label="Impressions" value={t.impressions.toLocaleString("en-IN")} delta={pctChange(t.impressions, p?.impressions)} />
+        <KpiTile label="CTR" value={`${t.ctr.toFixed(2)}%`} delta={pctChange(t.ctr, p?.ctr)} hint="Clicks divided by impressions. See the scorecard for the verdict per campaign type." />
+        <KpiTile label="Avg CPC" value={money(cur, t.cpc, 2)} delta={pctChange(t.cpc, p?.cpc)} lowerIsBetter />
+        <KpiTile label="CPM" value={money(cur, t.cpm)} delta={pctChange(t.cpm, p?.cpm)} lowerIsBetter hint="Cost per 1,000 impressions." />
+        <KpiTile label="Avg order value" value={t.aov > 0 ? money(cur, t.aov) : "-"} delta={pctChange(t.aov, p?.aov)} hint="Conversion value divided by conversions." />
+        {shares && <KpiTile label="Search share" value={shareText(shares.share)} verdict={judgeShare(shares.share)} hint="Share of eligible searches where your Search ads showed. 70% or more is the usual aim for core terms." />}
+        {shares && <KpiTile label="Lost to budget" value={`${shares.budgetLost.toFixed(1)}%`} verdict={judgeLost(shares.budgetLost)} hint="Searches missed because the budget ran out." />}
+        {shares && <KpiTile label="Lost to rank" value={`${shares.rankLost.toFixed(1)}%`} verdict={judgeLost(shares.rankLost)} hint="Searches missed because competitors outranked you." />}
+        {d.optimizationScore !== null && <KpiTile label="Optimization score" value={`${d.optimizationScore.toFixed(0)}%`} hint="Google's own setup score. It isn't a profit measure, and some of its suggestions raise spend." />}
+        <KpiTile label="View-through conv." value={t.viewThrough.toFixed(0)} hint="People who saw an ad without clicking, then converted later. Not included in Conversions." />
+        <KpiTile label="All conversions" value={t.allConversions.toFixed(1)} hint="Includes actions Google doesn't count in the main Conversions column." />
       </div>
 
-      {/* KPI row 1 */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-        {kpiRow1.map((card, i) => {
-          const Icon = card.icon;
-          return (
-            <div key={i} className="bg-white border border-black/[0.06] rounded-xl p-3">
-              <div className={`w-7 h-7 rounded-lg flex items-center justify-center mb-2 ${card.bg}`}>
-                <Icon size={13} className={card.color} />
-              </div>
-              <div className="text-[18px] font-bold text-[#181816]">{card.value}</div>
-              <div className="text-[14px] text-[#686864] mt-0.5">{card.label}</div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* KPI row 2 */}
-      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-        {kpiRow2.map((card, i) => {
-          const Icon = card.icon;
-          return (
-            <div key={i} className="bg-white border border-black/[0.06] rounded-xl p-3">
-              <div className={`w-7 h-7 rounded-lg flex items-center justify-center mb-2 ${card.bg}`}>
-                <Icon size={13} className={card.color} />
-              </div>
-              <div className="text-[18px] font-bold text-[#181816]">{card.value}</div>
-              <div className="text-[14px] text-[#686864] mt-0.5">{card.label}</div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Daily Spend + Conversions Chart */}
-      {data.daily.length > 0 && (
+      {scorecard.length > 0 && (
         <Card>
-          <CardHeader title="Daily Spend & Conversions" />
-          <ResponsiveContainer width="100%" height={220}>
-            <ComposedChart data={data.daily} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={d => d.slice(5)} />
-              <YAxis yAxisId="left"  tick={{ fontSize: 11 }} tickFormatter={v => `${sym(c)}${v}`} />
-              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
-              <RTooltip
-                formatter={(value, name) => {
-                  const v = Number(value ?? 0);
-                  if (name === "spend")       return [`${sym(c)}${v.toFixed(2)}`, "Spend"];
-                  if (name === "conversions") return [v.toFixed(1), "Conversions"];
-                  return [value, String(name)];
-                }}
-                labelFormatter={l => `Date: ${l}`}
-              />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar  yAxisId="left"  dataKey="spend"       fill="#34A853" opacity={0.8} name="spend" />
-              <Line yAxisId="right" dataKey="conversions" stroke="#E37400" dot={false} strokeWidth={2} name="conversions" />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </Card>
-      )}
-
-      {/* Campaigns + Keywords */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-
-        {data.campaigns.length > 0 && (
-          <Card>
-            <CardHeader title="Campaigns" />
-            <div className="overflow-x-auto">
-              <table className="w-full text-[15px]">
-                <thead>
-                  <tr className="border-b border-black/[0.06]">
-                    {["Campaign", "Spend", "ROAS", "Clicks", "CTR", "Conv."].map(h => (
-                      <th key={h} className="text-left py-2 px-2 text-[14px] text-[#686864] font-semibold whitespace-nowrap">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.campaigns.map((camp, i) => (
-                    <tr key={camp.id || i} className="border-b border-black/[0.04] hover:bg-[#f9f9f7]">
-                      <td className="py-2 px-2 font-medium text-[#181816] max-w-[140px] truncate" title={camp.name}>{camp.name}</td>
-                      <td className="py-2 px-2 text-[#181816] whitespace-nowrap">{sym(c)}{camp.spend.toFixed(0)}</td>
-                      <td className="py-2 px-2 whitespace-nowrap">
-                        <span className={`font-semibold ${camp.roas >= 3 ? "text-[#0d6b4f]" : camp.roas >= 1.5 ? "text-amber-600" : "text-red-500"}`}>
-                          {camp.roas > 0 ? `${camp.roas.toFixed(1)}x` : "-"}
-                        </span>
-                      </td>
-                      <td className="py-2 px-2 text-[#181816]">{camp.clicks.toLocaleString()}</td>
-                      <td className="py-2 px-2 text-[#181816]">{camp.ctr.toFixed(1)}%</td>
-                      <td className="py-2 px-2 text-[#181816]">{camp.conversions.toFixed(0)}</td>
+          <CardHeader title="Industry Benchmark Scorecard" right="Judged per campaign type" />
+          <div className="overflow-x-auto">
+            <table className="w-full text-[15px]">
+              <thead>
+                <tr className="border-b border-black/[0.06] dark:border-white/[0.06] text-[14px] text-[#71717A] dark:text-[#A1A1AA]">
+                  <th className="text-left py-2 px-2 font-semibold">Campaign type</th>
+                  <th className="text-left py-2 px-2 font-semibold">KPI</th>
+                  <th className="text-right py-2 px-2 font-semibold">You</th>
+                  <th className="text-right py-2 px-2 font-semibold">Standard</th>
+                  <th className="text-left py-2 px-2 font-semibold">Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scorecard.flatMap(s => {
+                  if (s.rows.length === 0) {
+                    return [(
+                      <tr key={s.channel} className="border-b border-black/[0.04] dark:border-white/[0.04]">
+                        <td className="py-2 px-2 font-medium whitespace-nowrap text-[#18181B] dark:text-[#F4F4F5]">{CHANNEL_LABEL[s.channel]}</td>
+                        <td colSpan={4} className="py-2 px-2 text-[#71717A] dark:text-[#A1A1AA]">No reliable published benchmark for this campaign type, so no verdict is shown.</td>
+                      </tr>
+                    )];
+                  }
+                  return s.rows.map((r, i) => (
+                    <tr key={`${s.channel}-${r.kpi}`} className="border-b border-black/[0.04] dark:border-white/[0.04]">
+                      <td className="py-2 px-2 font-medium whitespace-nowrap text-[#18181B] dark:text-[#F4F4F5]">{i === 0 ? CHANNEL_LABEL[s.channel] : ""}</td>
+                      <td className="py-2 px-2 whitespace-nowrap text-[#52525B] dark:text-[#A1A1AA]">{r.kpi}</td>
+                      <td className="py-2 px-2 text-right font-semibold tabular-nums whitespace-nowrap text-[#18181B] dark:text-[#F4F4F5]">{r.you}</td>
+                      <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap text-[#52525B] dark:text-[#A1A1AA]">{r.standard}</td>
+                      <td className="py-2 px-2"><VerdictBadge verdict={r.verdict} /></td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        )}
-
-        {data.keywords.length > 0 && (
-          <Card>
-            <CardHeader title={
-              <div className="flex items-center gap-1.5">
-                <Search size={12} className="text-[#34A853]" /> Top Keywords
-              </div>
-            } />
-            <div className="overflow-x-auto">
-              <table className="w-full text-[15px]">
-                <thead>
-                  <tr className="border-b border-black/[0.06]">
-                    {["Keyword", "Clicks", "CTR", "CPC", "Conv."].map(h => (
-                      <th key={h} className="text-left py-2 px-2 text-[14px] text-[#686864] font-semibold whitespace-nowrap">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.keywords.map((kw, i) => (
-                    <tr key={i} className="border-b border-black/[0.04] hover:bg-[#f9f9f7]">
-                      <td className="py-2 px-2 font-medium text-[#181816] max-w-[130px] truncate" title={kw.keyword}>{kw.keyword || "-"}</td>
-                      <td className="py-2 px-2 text-[#181816]">{kw.clicks.toLocaleString()}</td>
-                      <td className="py-2 px-2 text-[#181816]">{kw.ctr.toFixed(1)}%</td>
-                      <td className="py-2 px-2 text-[#181816] whitespace-nowrap">{sym(c)}{kw.avgCpc.toFixed(2)}</td>
-                      <td className="py-2 px-2 text-[#181816]">{kw.conversions.toFixed(0)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        )}
-      </div>
-
-      {data.campaigns.length === 0 && data.keywords.length === 0 && (
-        <Card>
-          <div className="py-10 text-center text-[16px] text-[#686864]">
-            No campaign data found for this date range. Try a wider date range.
+                  ));
+                })}
+              </tbody>
+            </table>
           </div>
+          <div className="mt-3"><BenchmarkNote /></div>
         </Card>
       )}
-    </div>
+
+      <DiagPanel
+        diags={diags}
+        currency={cur}
+        limit={5}
+        right={<Link href="/dashboard/gads/actions" className="inline-flex items-center gap-1 font-semibold text-[#EA580C] dark:text-[#FB923C] hover:underline">All recommendations <ArrowRight size={14} /></Link>}
+      />
+
+      {chartData.length > 1 && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <Card className="lg:col-span-2">
+            <CardHeader title="Spend and conversion value per day" />
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke="#E5E7EB" strokeOpacity={0.5} />
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} tickLine={false} axisLine={false} minTickGap={24} />
+                <YAxis tick={{ fontSize: 12 }} tickLine={false} axisLine={false} width={64} tickFormatter={v => `${sym(cur)}${Number(v).toLocaleString("en-IN")}`} />
+                <RTooltip {...CHART_TOOLTIP} formatter={(v, name) => [money(cur, Number(v ?? 0)), String(name)]} />
+                <Legend wrapperStyle={{ fontSize: 13 }} iconType="plainline" />
+                <Area type="monotone" dataKey="Conv. value" stroke="#22C55E" strokeWidth={2} fill="#22C55E" fillOpacity={0.1} dot={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="Spend" stroke="#3B82F6" strokeWidth={2} fill="#3B82F6" fillOpacity={0.1} dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </Card>
+          <Card>
+            <CardHeader title="Where spend goes" />
+            <Donut segments={mix} centerValue={money(cur, t.spend)} centerLabel="spend" size={130} />
+          </Card>
+          <Card className="lg:col-span-3">
+            <CardHeader title="Conversions per day" />
+            <ResponsiveContainer width="100%" height={150}>
+              <BarChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke="#E5E7EB" strokeOpacity={0.5} />
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} tickLine={false} axisLine={false} minTickGap={24} />
+                <YAxis tick={{ fontSize: 12 }} tickLine={false} axisLine={false} width={64} />
+                <RTooltip {...CHART_TOOLTIP} cursor={{ fill: "#A1A1AA", fillOpacity: 0.12 }} formatter={v => [Number(v ?? 0).toFixed(1), "Conversions"]} />
+                <Bar dataKey="Conversions" fill="#F97316" radius={[4, 4, 0, 0]} maxBarSize={24} isAnimationActive={false} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        </div>
+      )}
+
+      <Card>
+        <CardHeader title="Campaigns" right={`${d.campaigns.length} with activity`} />
+        <DataTable rows={d.campaigns} columns={columns} rowKey={c => c.id} initialSort="spend" searchOf={c => c.name} searchPlaceholder="Search campaigns" />
+      </Card>
+
+      {d.conversionActions.length > 0 && (
+        <Card>
+          <CardHeader title="What's being counted as a conversion" right="Check these are real sales" />
+          <DataTable rows={d.conversionActions} columns={convColumns} rowKey={(a, i) => `${a.name}-${i}`} initialSort="conv" />
+        </Card>
+      )}
+    </>
   );
 }
 
 export default function GadsPage() {
+  const state = useGadsSection<OverviewData>("overview");
   return (
-    <Suspense fallback={<div className="py-16 text-center text-[17px] text-[#686864]">Loading…</div>}>
-      <GadsContent />
-    </Suspense>
+    <div className="space-y-4">
+      <GadsHeader
+        icon={Megaphone}
+        title="Google Ads Overview"
+        subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}, compared with the previous period of the same length` : "All KPIs, compared with industry benchmarks"}
+      />
+      <GadsGate state={state}>{d => <Overview d={d} />}</GadsGate>
+    </div>
   );
 }
