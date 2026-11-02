@@ -10,15 +10,18 @@ import {
 import {
   AlertCircle, AlertTriangle, CheckCircle2, TrendingUp, TrendingDown,
   ShoppingCart, Share2, Search, Plug, MessageSquareText, Layout,
-  Zap, RefreshCw, Target, Megaphone, Eye, MousePointerClick, Send, ArrowRight, Sparkles,
+  Zap, RefreshCw, Target, Megaphone, Eye, MousePointerClick, Send, ArrowRight, Sparkles, BarChart3,
 } from "lucide-react";
 import Link from "next/link";
-import { useDateRange, getComparisonRange, formatRangeDates } from "@/lib/date-range-context";
+import { useDateRange, getComparisonRange, formatDateSpan, rangeDays, rangeText, toLocalYMD } from "@/lib/date-range-context";
 import { cn } from "@/lib/utils";
 import { Sparkline, Donut, Gauge } from "@/components/ui/charts";
+import { RangeText } from "@/components/ui/period";
 import { SimpleView } from "@/components/command-center/simple-view";
 import type { GlanceData } from "@/components/command-center/glance";
 import { buildPlainReport } from "@/lib/plain-insights";
+import { ROAS_MIN, ROAS_TARGET } from "@/lib/gads-analysis";
+import { readGadsResponse, gadsIssueText, type GadsCampaignRow, type GadsDailyRow, type GadsIssue, type GadsKpis } from "@/lib/gads-client";
 
 /* ─── Types ─────────────────────────────────────────────────── */
 interface ShopKpis {
@@ -29,6 +32,7 @@ interface ShopKpis {
 interface ShopData { shop: string; kpis: ShopKpis; dailyRevenue: { date?: string; day: string; revenue: number; orders?: number }[]; period: { days: number } }
 interface AnomalyData {
   critical: { title: string; desc: string }[]; warnings: { title: string; desc: string }[]; positive: { title: string; desc: string }[];
+  period?: { from: string; to: string };
   summary: { projectedMonthly: number; grossSales: number; totalOrders: number; codPct: number; repeatRate: number };
 }
 interface LeadsByType { form: number; messaging: number; calls: number }
@@ -42,7 +46,6 @@ interface GscKPIs { clicks: number; impressions: number; ctr: number; avgPositio
 interface GscKeyword { query: string; clicks: number; impressions: number; ctr: number; position: number }
 interface Ga4KPIs { sessions: number; users: number; bounceRate: number; avgSessionMin?: string; newUsers?: number }
 interface Ga4Ecom { itemsViewed: number; itemsAddedToCart: number; itemsCheckedOut: number; itemsPurchased: number; purchases: number; revenue: number }
-interface GadsKPIs { spend: number; roas: number; conversions: number; conversionValue?: number; clicks?: number }
 interface CostModel { cogsPerOrder: number; shippingPerOrder: number; rtoRate: number; rtoCostPerOrder: number; gatewayPct: number; codFeePct: number }
 
 const ASSUMED_LEAD_CONV = 0.12; // industry-rough lead→order rate; labelled "est." wherever used
@@ -95,11 +98,23 @@ function StatCard({ label, value, sub, tone = "neutral", spark, sparkColor = "#F
   );
 }
 
+// "2 Nov": a bare 11/2 reads as 11 February in India.
+const shortDay = (ymd: string) => new Date(ymd + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+// Search Console's newest final data is about 3 days old: the latest full week it can vouch for.
+function gscFinalWeek() {
+  const end = new Date(); end.setDate(end.getDate() - 3);
+  const start = new Date(end); start.setDate(start.getDate() - 6);
+  return { from: toLocalYMD(start), to: toLocalYMD(end) };
+}
+
 const quickActions = [
   { label: "Sales Report", href: "/dashboard/sales", icon: ShoppingCart, color: "bg-[#FFF7ED] text-[#F97316]" },
   { label: "Meta Campaigns", href: "/dashboard/meta", icon: Share2, color: "bg-[#EFF6FF] text-[#1877F2]" },
+  { label: "Google Ads", href: "/dashboard/gads", icon: Megaphone, color: "bg-[#FEFCE8] text-[#A16207]" },
   { label: "Creative Studio", href: "/dashboard/creative", icon: Layout, color: "bg-[#F5F3FF] text-[#7C3AED]" },
   { label: "Search Console", href: "/dashboard/gsc", icon: Search, color: "bg-[#F0FDF4] text-[#16A34A]" },
+  { label: "Analytics GA4", href: "/dashboard/ga4", icon: BarChart3, color: "bg-[#EEF2FF] text-[#6366F1]" },
   { label: "Financial P&L", href: "/dashboard/financial", icon: TrendingUp, color: "bg-[#FEF2F2] text-[#DC2626]" },
   { label: "Connections", href: "/dashboard/connections", icon: Plug, color: "bg-[#F5F5F4] text-[#71717A]" },
 ];
@@ -130,14 +145,17 @@ export default function CommandCenterPage() {
   const [compMeta, setCompMeta] = useState<MetaKPIs | null>(null);
   const [campaigns, setCampaigns] = useState<MetaCampaign[]>([]);
   const [metaDaily, setMetaDaily] = useState<{ date: string; spend: number; purchaseValue: number }[]>([]);
-  const [gads, setGads] = useState<GadsKPIs | null>(null);
-  const [gadsDaily, setGadsDaily] = useState<{ date: string; spend: number }[]>([]);
+  const [gads, setGads] = useState<GadsKpis | null>(null);
+  const [compGads, setCompGads] = useState<GadsKpis | null>(null);
+  const [gadsDaily, setGadsDaily] = useState<GadsDailyRow[]>([]);
+  const [gadsCampaigns, setGadsCampaigns] = useState<GadsCampaignRow[]>([]);
+  const [gadsIssue, setGadsIssue] = useState<GadsIssue | null>(null);
   const [gsc, setGsc] = useState<GscKPIs | null>(null);
   const [gscKeywords, setGscKeywords] = useState<GscKeyword[]>([]);
   const [ga4, setGa4] = useState<Ga4KPIs | null>(null);
   const [ga4Ecom, setGa4Ecom] = useState<Ga4Ecom | null>(null);
   const [ga4Channels, setGa4Channels] = useState<{ channel: string; sessions: number }[]>([]);
-  const [funnelSrc, setFunnelSrc] = useState<"meta" | "ga4" | "shopify">("meta");
+  const [funnelSrc, setFunnelSrc] = useState<"meta" | "google" | "ga4" | "shopify">("meta");
   const [connections, setConnections] = useState({ shopify: false, meta: false, gads: false, gsc: false, ga4: false });
   const [cost, setCost] = useState<CostModel | null>(null);
   const [salesTarget, setSalesTarget] = useState(0);
@@ -158,14 +176,25 @@ export default function CommandCenterPage() {
     try {
       const c = localStorage.getItem("skylitee-pl-inputs");
       if (c) setCost(JSON.parse(c));
+      // The Goals page saves one record per month.
       const g = localStorage.getItem("skylitee-goals");
-      if (g) setSalesTarget(JSON.parse(g)?.salesTarget ?? 0);
+      const records: { month: string; salesTarget: number }[] = g ? JSON.parse(g) : [];
+      const thisMonth = toLocalYMD(new Date()).slice(0, 7);
+      setSalesTarget(records.find(r => r.month === thisMonth)?.salesTarget ?? 0);
     } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
     if (!rangeReady) return;
+    // Old numbers must never sit under new dates, and a slow answer for the previous
+    // range must not overwrite the current one.
+    let stale = false;
     setLoading(true);
+    setShop(null); setCompShop(null);
+    setMeta(null); setCompMeta(null); setMetaDaily([]); setCampaigns([]);
+    setGsc(null); setGscKeywords([]);
+    setGa4(null); setGa4Ecom(null); setGa4Channels([]);
+    setGads(null); setCompGads(null); setGadsDaily([]); setGadsCampaigns([]); setGadsIssue(null);
     const compRange = getComparisonRange(range, compareWith);
     Promise.allSettled([
       fetch(`/api/shopify/dashboard?from=${range.from}&to=${range.to}`).then(r => r.json()),
@@ -176,35 +205,40 @@ export default function CommandCenterPage() {
       fetch(`/api/gsc?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/ga4?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/google/ads?from=${range.from}&to=${range.to}`).then(r => r.json()),
+      compRange ? fetch(`/api/google/ads?from=${compRange.from}&to=${compRange.to}`).then(r => r.json()) : Promise.resolve(null),
     ]).then(results => {
-      const [shopRes, anomRes, compRes, metaRes, compMetaRes, gscRes, ga4Res, gadsRes] = results;
-      if (shopRes.status === "fulfilled" && !shopRes.value?.error) { setShop(shopRes.value); setConnections(c => ({ ...c, shopify: true })); }
-      if (anomRes.status === "fulfilled" && !anomRes.value?.error) setAnomalies(anomRes.value);
-      if (compRes.status === "fulfilled" && compRes.value && !compRes.value?.error) setCompShop(compRes.value);
-      if (metaRes.status === "fulfilled" && !metaRes.value?.error) {
-        setMeta(metaRes.value.kpis ?? null); setMetaDaily(metaRes.value.daily ?? []); setCampaigns(metaRes.value.campaigns ?? []);
-        setConnections(c => ({ ...c, meta: true }));
-      }
-      if (compMetaRes.status === "fulfilled" && compMetaRes.value && !compMetaRes.value?.error) setCompMeta(compMetaRes.value.kpis ?? null);
-      if (gscRes.status === "fulfilled" && !gscRes.value?.error) { setGsc(gscRes.value.kpis ?? null); setGscKeywords(gscRes.value.keywords ?? []); setConnections(c => ({ ...c, gsc: true })); }
-      if (ga4Res.status === "fulfilled" && !ga4Res.value?.error) { setGa4(ga4Res.value.kpis ?? null); setGa4Ecom(ga4Res.value.ecommerce ?? null); setGa4Channels(ga4Res.value.channels ?? []); setConnections(c => ({ ...c, ga4: true })); }
-      if (gadsRes.status === "fulfilled" && !gadsRes.value?.error) { setGads(gadsRes.value.kpis ?? null); setGadsDaily(gadsRes.value.daily ?? []); setConnections(c => ({ ...c, gads: true })); }
-    }).finally(() => setLoading(false));
+      if (stale) return;
+      const [shopRes, anomRes, compRes, metaRes, compMetaRes, gscRes, ga4Res, gadsRes, compGadsRes] = results;
+      const ok = (r: PromiseSettledResult<any>) => (r.status === "fulfilled" && r.value && !r.value.error ? r.value : null); // eslint-disable-line @typescript-eslint/no-explicit-any
+      const s = ok(shopRes), m = ok(metaRes), sc = ok(gscRes), an = ok(ga4Res);
+      const g = readGadsResponse(gadsRes.status === "fulfilled" ? gadsRes.value : null);
+      if (s) setShop(s);
+      if (ok(anomRes)) setAnomalies(anomRes.status === "fulfilled" ? anomRes.value : null);
+      if (ok(compRes)) setCompShop(ok(compRes));
+      if (m) { setMeta(m.kpis ?? null); setMetaDaily(m.daily ?? []); setCampaigns(m.campaigns ?? []); }
+      if (ok(compMetaRes)) setCompMeta(ok(compMetaRes).kpis ?? null);
+      if (sc) { setGsc(sc.kpis ?? null); setGscKeywords(sc.keywords ?? []); }
+      if (an) { setGa4(an.kpis ?? null); setGa4Ecom(an.ecommerce ?? null); setGa4Channels(an.channels ?? []); }
+      if (g.data) { setGads(g.data.kpis); setGadsDaily(g.data.daily); setGadsCampaigns(g.data.campaigns); }
+      setGadsIssue(g.issue);
+      if (compGadsRes.status === "fulfilled" && compGadsRes.value) setCompGads(readGadsResponse(compGadsRes.value).data?.kpis ?? null);
+      setConnections({ shopify: !!s, meta: !!m, gads: !!g.data, gsc: !!sc, ga4: !!an });
+    }).finally(() => { if (!stale) setLoading(false); });
+    return () => { stale = true; };
   }, [range.from, range.to, compareWith, rangeReady]);
 
-  // Google Search Console finalises data 2–3 days late, so "today" is always empty there.
+  // Google Search Console finalises data 2-3 days late, so "today" is always empty there.
   // For a recent range, the glance card shows the latest 7 FINAL days instead (labelled).
-  const [gscRecent, setGscRecent] = useState<GscKPIs | null>(null);
+  const [gscRecent, setGscRecent] = useState<(GscKPIs & { from: string; to: string }) | null>(null);
   useEffect(() => {
     if (!rangeReady) return;
-    const lagCut = new Date(); lagCut.setDate(lagCut.getDate() - 3);
-    if (range.to <= lagCut.toISOString().slice(0, 10)) { setGscRecent(null); return; }
-    const end = new Date(); end.setDate(end.getDate() - 3);
-    const start = new Date(end); start.setDate(start.getDate() - 6);
-    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    fetch(`/api/gsc?from=${ymd(start)}&to=${ymd(end)}`).then(r => r.json())
-      .then(d => setGscRecent(!d?.error ? d.kpis ?? null : null))
-      .catch(() => setGscRecent(null));
+    const week = gscFinalWeek();
+    if (range.to <= week.to) { setGscRecent(null); return; }
+    let stale = false;
+    fetch(`/api/gsc?from=${week.from}&to=${week.to}`).then(r => r.json())
+      .then(d => { if (!stale) setGscRecent(!d?.error && d.kpis ? { ...d.kpis, ...week } : null); })
+      .catch(() => { if (!stale) setGscRecent(null); });
+    return () => { stale = true; };
   }, [range.to, rangeReady]);
 
   /* ── Derived ── */
@@ -216,18 +250,17 @@ export default function CommandCenterPage() {
   const liveCount = [connections.shopify, connections.meta, connections.gsc, connections.ga4, connections.gads].filter(Boolean).length;
   const compLabel = getComparisonRange(range, compareWith)?.label ?? "prev";
 
-  // GSC reports finalise ~2–3 days late, so a recent window legitimately reads 0
+  // GSC reports finalise ~2-3 days late, so a recent window legitimately reads 0
   // even when GA4 shows traffic. Flag it so a bare "0" doesn't look broken.
-  const gscRecentLag = useMemo(() => {
-    const d = new Date(); d.setDate(d.getDate() - 3);
-    return range.to > d.toISOString().slice(0, 10);
-  }, [range.to]);
+  const gscRecentLag = useMemo(() => range.to > gscFinalWeek().to, [range.to]);
   const gscPending = !!gsc && gsc.clicks === 0 && gscRecentLag;
 
   const pct = (curr: number, prev?: number) => (!prev ? undefined : +((curr - prev) / prev * 100).toFixed(0));
   const salesChange = pct(k?.grossSales ?? 0, compShop?.kpis.grossSales);
   const ordersChange = pct(k?.totalOrders ?? 0, compShop?.kpis.totalOrders);
-  const spendChange = pct(meta?.spend ?? 0, compMeta?.spend);
+  // Only compare spend when both periods cover the same platforms, or a failed load reads as a swing.
+  const spendComparable = (!meta || !!compMeta) && (!gads || !!compGads);
+  const spendChange = spendComparable ? pct(totalSpend, (compMeta?.spend ?? 0) + (compGads?.spend ?? 0)) : undefined;
 
   // Objective buckets (judge each by its own KPI)
   const sales = useMemo(() => bucketFor(campaigns, "SALES"), [campaigns]);
@@ -244,7 +277,11 @@ export default function CommandCenterPage() {
   // Sparkline series for KPI cards
   const revSpark = shop?.dailyRevenue.map(d => d.revenue) ?? [];
   const ordersSpark = shop?.dailyRevenue.map(d => d.orders ?? 0) ?? [];
-  const spendSpark = metaDaily.map(d => d.spend);
+  const spendSpark = useMemo(() => {
+    const byDate = new Map<string, number>();
+    [...metaDaily, ...gadsDaily].forEach(d => byDate.set(d.date, (byDate.get(d.date) ?? 0) + d.spend));
+    return [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => v);
+  }, [metaDaily, gadsDaily]);
 
   // Donut / gauge data
   const metaSalesV = meta?.purchaseValue ?? 0;
@@ -259,7 +296,16 @@ export default function CommandCenterPage() {
     { label: "Prepaid (cash now)", value: prepaidRev, color: "#F97316" },
     { label: "COD (pending)", value: codRev, color: "#94A3B8" },
   ];
-  const goalPct = salesTarget > 0 && k ? Math.round((k.grossSales / salesTarget) * 100) : null;
+  // The goal is monthly, so it's measured against month-to-date sales, whatever range is picked above.
+  const monthSales = anomalies?.summary.grossSales ?? null;
+  const goalPct = salesTarget > 0 && monthSales !== null ? Math.round((monthSales / salesTarget) * 100) : null;
+  const monthDates = anomalies?.period ? formatDateSpan(anomalies.period.from, anomalies.period.to) : "this month";
+
+  // Sales ads across Meta and Google. Google's value comes from its own conversion tracking.
+  const gSpend = gads?.spend ?? 0;
+  const adSpendForSales = sales.spend + gSpend;
+  const adSalesValue = sales.purchaseValue + gSalesV;
+  const salesRoasAll = adSpendForSales > 0 ? +(adSalesValue / adSpendForSales).toFixed(2) : 0;
 
   // Break-even ROAS + unit economics from the saved cost model
   const econ = useMemo(() => {
@@ -295,7 +341,17 @@ export default function CommandCenterPage() {
   const dailyRunRate = k ? Math.round(k.grossSales / Math.max(days, 1)) : 0;
   const today = new Date();
   const daysLeftInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() - today.getDate();
-  const neededPerDay = salesTarget > 0 && k ? Math.max(0, Math.round((salesTarget - k.grossSales) / Math.max(daysLeftInMonth, 1))) : 0;
+  const neededPerDay = salesTarget > 0 && monthSales !== null ? Math.max(0, Math.round((salesTarget - monthSales) / Math.max(daysLeftInMonth, 1))) : 0;
+
+  // Google campaigns worth acting on. Paused ones can't be paused again, so they're left out.
+  const gLive = useMemo(() => gadsCampaigns.filter(c => c.status !== "PAUSED" && c.spend > 0), [gadsCampaigns]);
+  const gHasConversions = (gads?.conversions ?? 0) > 0;
+  const gDead = useMemo(() => (gHasConversions ? gLive.filter(c => c.conversions === 0 && c.spend >= 300) : []), [gLive, gHasConversions]);
+  const gLosing = useMemo(() => gLive.filter(c => c.conversionValue > 0 && c.roas < 1), [gLive]);
+  const gWinners = useMemo(() => {
+    const bar = Math.max((econ?.breakEvenRoas ?? ROAS_TARGET) * 1.3, ROAS_TARGET);
+    return gLive.filter(c => c.roas >= bar && c.spend >= 1000).sort((a, b) => b.roas - a.roas);
+  }, [gLive, econ]);
 
   /* ── Combined chart ── */
   const chartData = useMemo(() => {
@@ -306,7 +362,7 @@ export default function CommandCenterPage() {
       // so ad spend always rendered as a flat 0 line.
       const md = metaDaily.find(m => m.date === d.date);
       const gd = gadsDaily.find(g => g.date === d.date);
-      return { day: d.day, revenue: d.revenue, spend: (md?.spend ?? 0) + (gd?.spend ?? 0) };
+      return { day: d.date ? shortDay(d.date) : d.day, revenue: d.revenue, spend: (md?.spend ?? 0) + (gd?.spend ?? 0) };
     });
   }, [shop, metaDaily, gadsDaily]);
 
@@ -325,6 +381,13 @@ export default function CommandCenterPage() {
       { label: "Add to Cart", value: meta.atc, display: cnt(meta.atc) },
       { label: "Checkout", value: meta.checkout, display: cnt(meta.checkout) },
       { label: "Purchases", value: meta.purchases, display: cnt(meta.purchases) },
+    ].filter(s => s.value > 0) : [];
+
+    // Google Ads - Google's own numbers. "Conversions" is whatever goals the account counts.
+    const googleSteps = gads ? [
+      { label: "Impressions", value: gads.impressions, display: cnt(gads.impressions) },
+      { label: "Clicks", value: gads.clicks, display: cnt(gads.clicks) },
+      { label: "Conversions", value: gads.conversions, display: cnt(gads.conversions) },
     ].filter(s => s.value > 0) : [];
 
     // GA4 - the on-site ecommerce funnel (needs ecommerce events configured)
@@ -375,16 +438,28 @@ export default function CommandCenterPage() {
       return { steps, worst, diagnosis: diag[`${worst.from}→${worst.to}`] ?? "", available: steps.length >= 2, unit };
     };
 
+    // Almost nobody clicks an ad, so impressions to clicks is always the biggest drop and says
+    // nothing. What the owner can act on is what clicks turn into.
+    const google = build(googleSteps, "count");
+    if (gads && gads.clicks > 0 && gads.conversions > 0) {
+      const rate = (gads.conversions / gads.clicks) * 100;
+      google.worst = { from: "Clicks", to: "Conversions", dropPct: Math.round(100 - rate) };
+      google.diagnosis = rate < 1
+        ? `Only ${rate.toFixed(1)} in 100 clicks convert. Check the landing page and the search terms in Google Ads before spending more.`
+        : "";
+    }
+
     return {
       meta: build(metaSteps, "count"),
+      google,
       ga4: build(ga4Steps, "count"),
       shopify: build(shopSteps, "inr"),
     };
-  }, [meta, ga4, ga4Ecom, k, prepaidRev]);
+  }, [meta, gads, ga4, ga4Ecom, k, prepaidRev]);
 
   // Keep the selected source on something that actually has data.
   useEffect(() => {
-    const order = ["meta", "ga4", "shopify"] as const;
+    const order = ["meta", "google", "ga4", "shopify"] as const;
     if (!funnels[funnelSrc].available) {
       const first = order.find(s => funnels[s].available);
       if (first && first !== funnelSrc) setFunnelSrc(first);
@@ -392,9 +467,10 @@ export default function CommandCenterPage() {
   }, [funnels, funnelSrc]);
 
   const funnel = funnels[funnelSrc];
-  const anyFunnel = funnels.meta.available || funnels.ga4.available || funnels.shopify.available;
-  const FUNNEL_SRC_META: Record<"meta" | "ga4" | "shopify", { label: string; sub: string }> = {
+  const anyFunnel = funnels.meta.available || funnels.google.available || funnels.ga4.available || funnels.shopify.available;
+  const FUNNEL_SRC_META: Record<"meta" | "google" | "ga4" | "shopify", { label: string; sub: string }> = {
     meta: { label: "Meta", sub: "Meta-tracked ad funnel - impressions to purchase" },
+    google: { label: "Google", sub: "Google Ads funnel - impressions to the conversions your account counts" },
     ga4: { label: "GA4", sub: "On-site behaviour - sessions to purchase" },
     shopify: { label: "Shopify", sub: "Revenue funnel - gross sales to real cash collected" },
   };
@@ -402,11 +478,22 @@ export default function CommandCenterPage() {
   /* ── Cross-platform alerts ── */
   const alerts = useMemo(() => {
     const out: { sev: "danger" | "warning" | "positive"; title: string; body: string }[] = [];
-    if (meta && spendChange !== undefined && spendChange >= 25 && (ordersChange ?? 0) <= 5) {
-      out.push({ sev: "danger", title: `Meta spend up ${spendChange}% but orders flat`, body: "Spend rose sharply without more orders - likely an attribution break (pixel) or a landing-page issue. Check the Meta pixel and your top campaign's landing page." });
+    if (totalSpend > 0 && spendChange !== undefined && spendChange >= 25 && (ordersChange ?? 0) <= 5) {
+      out.push({ sev: "danger", title: `Ad spend up ${spendChange}% but orders flat`, body: "Spend rose sharply without more orders - likely a tracking break or a landing-page issue. Check the Meta pixel, your Google conversion tag and your top campaign's landing page." });
     }
     if (meta && sales.count > 0 && meta.spend > 0 && meta.purchaseValue === 0) {
-      out.push({ sev: "danger", title: `₹${meta.spend.toLocaleString("en-IN")} spent, ₹0 tracked revenue`, body: "A sales campaign is spending but recording no revenue - almost always a broken/ missing purchase pixel. Verify the Meta pixel fires on order confirmation." });
+      out.push({ sev: "danger", title: `₹${meta.spend.toLocaleString("en-IN")} spent on Meta, ₹0 tracked revenue`, body: "A sales campaign is spending but recording no revenue - almost always a broken/ missing purchase pixel. Verify the Meta pixel fires on order confirmation." });
+    }
+    if (gads && gads.spend >= 500 && gads.conversions === 0) {
+      // Google can credit a conversion to the click's day hours later, so a day or two isn't proof yet.
+      const short = rangeDays(range) < 3;
+      out.push({ sev: short ? "warning" : "danger", title: `${formatINR(gads.spend)} on Google Ads, 0 conversions`, body: short
+        ? "Google can report conversions a few hours late, so check again tomorrow. If it's still 0, test your conversion tag in Google Ads."
+        : "Either these ads aren't bringing buyers or your conversion tag isn't firing. Check Goals > Conversions in Google Ads first." });
+    }
+    if (gads && gads.conversionValue > 0) {
+      const floor = econ?.breakEvenRoas ?? ROAS_MIN;
+      if (gads.roas < floor) out.push({ sev: "warning", title: `Google Ads ROAS ${gads.roas}x - below ${floor}x`, body: econ?.breakEvenRoas ? "At your margins these ads lose money. Open Recommendations under Google Ads to see which campaigns to fix first." : "Under 2x usually loses money once product costs are paid. Open Recommendations under Google Ads to see which campaigns to fix first." });
     }
     if (codPct > 60 && k) out.push({ sev: "warning", title: `COD at ${codPct}% - cash & RTO risk`, body: `Only ${formatINR(prepaidRev)} is collected up front; ${formatINR(codRev)} is COD (pending + return risk). Offer a ₹75–100 prepaid discount to shift the mix.` });
     if (meta && meta.frequency >= 3) out.push({ sev: "warning", title: `Ad frequency at ${meta.frequency}x - fatigue incoming`, body: "Audience is seeing the same ads too often; CPM/CPL will rise in 2–3 days. Refresh creative or widen the audience now." });
@@ -415,7 +502,7 @@ export default function CommandCenterPage() {
     }
     (anomalies?.critical ?? []).forEach(a => out.push({ sev: "danger", title: a.title, body: a.desc }));
     return out.sort((a, b) => ({ danger: 0, warning: 1, positive: 2 }[a.sev] - { danger: 0, warning: 1, positive: 2 }[b.sev]));
-  }, [meta, spendChange, ordersChange, sales.count, codPct, k, prepaidRev, codRev, anomalies]);
+  }, [meta, gads, econ, range, totalSpend, spendChange, ordersChange, sales.count, codPct, k, prepaidRev, codRev, anomalies]);
 
   /* ── AI insights (computed, sharp) ── */
   const insights = useMemo(() => {
@@ -426,6 +513,13 @@ export default function CommandCenterPage() {
       else if (be) list.push({ type: "danger", title: `Sales ROAS ${sales.roas}x - below your ${be}x break-even`, body: `At your margins you need ${be}x just to break even. Pause the lowest-ROAS sales campaigns and fix the biggest funnel drop before scaling.` });
       else list.push({ type: sales.roas >= 3 ? "positive" : "warning", title: `Sales ROAS ${sales.roas}x`, body: configured ? "" : "Set your costs in Financial P&L to see your real break-even ROAS." });
     }
+    if (gads && gads.spend > 0 && gads.conversionValue > 0) {
+      const be = econ?.breakEvenRoas;
+      const good = gads.roas >= (be ?? ROAS_TARGET);
+      list.push({ type: good ? "positive" : be ? "danger" : "warning", title: `Google Ads ROAS ${gads.roas}x${be ? ` vs your ${be}x break-even` : ""}`, body: gWinners.length ? `"${gWinners[0].name}" leads at ${gWinners[0].roas}x. It has room for more budget.` : good ? "Google Ads is paying back. Check Recommendations under Google Ads before you raise budgets." : `Every ₹1 returns ₹${gads.roas}. Fix the weakest campaigns before raising budgets.` });
+    } else if (gads && gads.conversions > 0 && gads.conversionValue === 0) {
+      list.push({ type: "warning", title: `${gads.conversions} Google conversions, ₹0 value recorded`, body: "Google counts these but has no sale value for them, so ROAS can't be judged. Add a value to your purchase conversion, or this is lead tracking only." });
+    }
     if (leadsB.count > 0 && totalLeads > 0 && waPct > 0 && waPct < 50) {
       list.push({ type: "warning", title: `${100 - waPct}% of leads are forms, ${waPct}% WhatsApp`, body: "WhatsApp/chat leads usually convert higher and drop off less. Shift creative CTAs to click-to-WhatsApp to lift lead quality." });
     }
@@ -433,7 +527,7 @@ export default function CommandCenterPage() {
     if (k && codPct > 55) list.push({ type: "warning", title: `COD ${codPct}% - real cash is ${formatINR(prepaidRev)}, not ${formatINR(k.grossSales)}`, body: "COD ties up cash and carries RTO risk. A small prepaid incentive shifts behaviour and protects margin." });
     const order = { danger: 0, warning: 1, positive: 2 } as const;
     return list.filter(x => x.body).sort((a, b) => order[a.type] - order[b.type]).slice(0, 5);
-  }, [sales, leadsB.count, totalLeads, waPct, gscOpp, k, codPct, prepaidRev, econ, configured]);
+  }, [sales, gads, gWinners, leadsB.count, totalLeads, waPct, gscOpp, k, codPct, prepaidRev, econ, configured]);
 
   /* ── Priority actions (₹-ranked) ── */
   const actions = useMemo(() => {
@@ -443,6 +537,18 @@ export default function CommandCenterPage() {
     if (losing.length) {
       const waste = Math.round(losing.reduce((s, c) => s + c.spend, 0));
       out.push({ impact: waste, text: `Pause ${losing.length} sales campaign${losing.length > 1 ? "s" : ""} running below 1x ROAS (e.g. "${losing[0].name}")`, source: "Meta" });
+    }
+    if (gDead.length) {
+      const waste = Math.round(gDead.reduce((s, c) => s + c.spend, 0));
+      out.push({ impact: waste, text: `Review ${gDead.length} Google campaign${gDead.length > 1 ? "s" : ""} with spend but no conversions (biggest: "${[...gDead].sort((a, b) => b.spend - a.spend)[0].name}")`, source: "Google Ads" });
+    }
+    if (gLosing.length) {
+      const loss = Math.round(gLosing.reduce((s, c) => s + (c.spend - c.conversionValue), 0));
+      out.push({ impact: loss, text: `Fix or pause ${gLosing.length} Google campaign${gLosing.length > 1 ? "s" : ""} running below 1x ROAS (e.g. "${gLosing[0].name}")`, source: "Google Ads" });
+    }
+    if (gWinners.length) {
+      const w = gWinners[0];
+      out.push({ impact: Math.round(w.spend * 0.2 * w.roas), text: `Raise "${w.name}" budget by 20% - it returns ${w.roas}x on Google`, source: "Google Ads" });
     }
     const fatigued = campaigns.filter(c => c.frequency >= 3.5 && c.spend > 0);
     if (fatigued.length) out.push({ impact: Math.round(fatigued.reduce((s, c) => s + c.spend, 0) * 0.2), text: `Refresh creative on ${fatigued.length} fatigued campaign${fatigued.length > 1 ? "s" : ""} (freq ≥ 3.5) before CPL rises`, source: "Meta" });
@@ -459,7 +565,7 @@ export default function CommandCenterPage() {
     // Lead pipeline / WhatsApp
     if (leadsB.count > 0 && pipelineEst > 0) out.push({ impact: Math.round(pipelineEst * 0.25), text: `Follow up ${totalLeads} leads fast - est. ${formatINR(pipelineEst)} pipeline (${totalLeads}×${Math.round(ASSUMED_LEAD_CONV * 100)}%×AOV); shift CTAs to WhatsApp to lift conversion`, source: "Meta + Shopify (est.)" });
     return out.sort((a, b) => b.impact - a.impact).slice(0, 5);
-  }, [campaigns, k, codPct, cost, gscOpp, leadsB.count, pipelineEst, totalLeads]);
+  }, [campaigns, gDead, gLosing, gWinners, k, codPct, cost, gscOpp, leadsB.count, pipelineEst, totalLeads]);
 
   const platforms = [
     { label: "Shopify", connected: connections.shopify },
@@ -477,6 +583,7 @@ export default function CommandCenterPage() {
   /* ── Plain-language report for the Simple view ── */
   const plain = useMemo(() => buildPlainReport({
     periodLabel: (() => {
+      if (range.preset === "custom") return `the period ${range.label}`;
       const l = (range.label ?? "").toLowerCase();
       if (["today", "yesterday", "this month", "last month"].includes(l)) return l;
       return l.startsWith("last ") ? `the ${l}` : "this period";
@@ -490,23 +597,28 @@ export default function CommandCenterPage() {
     repeatRate: anomalies && anomalies.summary.repeatRate > 0 ? anomalies.summary.repeatRate : null,
     meta: meta ? { spend: meta.spend, purchaseValue: meta.purchaseValue, leads: meta.leads, clicks: meta.clicks, impressions: meta.impressions, frequency: meta.frequency } : null,
     campaigns: campaigns.map(c => ({ name: c.name, objective: c.objective, spend: c.spend, purchases: c.purchases, purchaseValue: c.purchaseValue, leads: c.leads, clicks: c.clicks, impressions: c.impressions, frequency: c.frequency })),
-    gads: gads ? { spend: gads.spend, conversionValue: gads.conversionValue ?? 0 } : null,
+    gads: gads ? { spend: gads.spend, conversionValue: gads.conversionValue, conversions: gads.conversions, clicks: gads.clicks, impressions: gads.impressions } : null,
+    gadsCampaigns: gLive.map(c => ({ name: c.name, spend: c.spend, conversions: c.conversions, conversionValue: c.conversionValue })),
     gsc: gsc ? { avgPosition: gsc.avgPosition, nearPage1: gscOpp.count, extraClicks: gscOpp.extraClicks, pending: gscPending } : null,
-    connected: { meta: connections.meta, google: connections.gsc || connections.ga4 || connections.gads },
+    connected: { meta: connections.meta, google: connections.gsc || connections.ga4 || connections.gads || !!gadsIssue },
     breakEvenRoas: econ?.breakEvenRoas ?? null,
     costsSet: configured,
     rto: cost ? { rate: cost.rtoRate, costPerOrder: cost.rtoCostPerOrder } : null,
-  }), [range.label, shopName, k, prepaidRev, codRev, salesChange, anomalies, meta, campaigns, gads, gsc, gscOpp, gscPending, connections, econ, configured, cost]);
+  }), [range.label, range.preset, shopName, k, prepaidRev, codRev, salesChange, anomalies, meta, campaigns, gads, gLive, gadsIssue, gsc, gscOpp, gscPending, connections, econ, configured, cost]);
 
   /* ── "At a glance" chart data for the Simple view ── */
   const glance = useMemo<GlanceData>(() => {
     // Today vs a FULL yesterday isn't like-for-like - say so in the label.
-    const cmp = range.preset === "today" && compareWith === "prev_period" ? "Yesterday (full day)" : `vs ${compLabel}`;
+    const compDates = getComparisonRange(range, compareWith);
+    const cmpWord = range.preset === "today" && compareWith === "prev_period" ? "Yesterday, full day" : `vs ${compLabel}`;
+    const cmp = compDates ? `${cmpWord} (${formatDateSpan(compDates.from, compDates.to)})` : cmpWord;
     // GSC: use the period's own numbers when they exist, else the latest 7 final days.
     const gscUse = gsc && !gscPending ? { ...gsc, note: undefined as string | undefined }
-      : gscRecent ? { ...gscRecent, note: "Search: last 7 days (Google is 2–3 days late)" } : null;
+      : gscRecent ? { ...gscRecent, note: `Search: ${formatDateSpan(gscRecent.from, gscRecent.to)} (Google is 2-3 days late)` } : null;
     return {
       periodLabel: range.label,
+      periodText: rangeText(range),
+      periodDates: formatDateSpan(range.from, range.to),
       compLabel: cmp,
       shop: k ? { sales: k.grossSales, orders: k.totalOrders, aov: k.aov, prepaidRevenue: prepaidRev, codRevenue: codRev, prepaidOrders: k.prepaidOrders, codOrders: k.codOrders } : null,
       compShop: compShop ? { sales: compShop.kpis.grossSales, orders: compShop.kpis.totalOrders } : null,
@@ -515,7 +627,7 @@ export default function CommandCenterPage() {
       ga4: ga4 ? { users: ga4.users, sessions: ga4.sessions, bounceRate: ga4.bounceRate, channels: ga4Channels } : null,
       gsc: connections.gsc ? gscUse : null,
     };
-  }, [range.preset, range.label, compareWith, compLabel, gsc, gscPending, gscRecent, k, prepaidRev, codRev, compShop, meta, gads, ga4, ga4Channels, connections.gsc]);
+  }, [range, compareWith, compLabel, gsc, gscPending, gscRecent, k, prepaidRev, codRev, compShop, meta, gads, ga4, ga4Channels, connections.gsc]);
 
   return (
     <div className="space-y-3">
@@ -532,7 +644,7 @@ export default function CommandCenterPage() {
               </span>
             ) : null}
           </div>
-          <p className="text-[14px] text-[#A1A1AA] mt-0.5">{range.label} · <span className="font-semibold text-[#71717A] dark:text-[#A1A1AA]">{formatRangeDates(range)}</span> · {liveCount} of 5 platforms active</p>
+          <p className="text-[14px] text-[#A1A1AA] mt-0.5"><span className="font-semibold text-[#71717A] dark:text-[#A1A1AA]"><RangeText /></span> · {liveCount} of 5 platforms active</p>
         </div>
         <div className="flex items-center gap-1.5">
           <div className="flex items-center bg-[#F5F5F4] dark:bg-[#1C1C1C] rounded-lg p-0.5 mr-1" role="group" aria-label="View">
@@ -555,10 +667,10 @@ export default function CommandCenterPage() {
       </div>
 
       {view === "simple" ? (
-        <SimpleView report={plain} glance={glance} loading={loading} onAsk={askAI} storeName={shopName} periodTitle={range.label} />
+        <SimpleView report={plain} glance={glance} loading={loading} onAsk={askAI} storeName={shopName} periodTitle={rangeText(range)} />
       ) : (<>
       {/* ── SECTION 1: Active Objectives Strip ── */}
-      {activeObjs.length > 0 && (
+      {(activeObjs.length > 0 || gSpend > 0) && (
         <div className="flex items-center gap-2 flex-wrap bg-white dark:bg-[#171717] rounded-2xl border border-black/[0.06] dark:border-white/[0.06] px-3 py-2.5">
           <span className="text-[14px] font-bold text-[#18181B] dark:text-[#F4F4F5]">You&apos;re running:</span>
           {activeObjs.map(b => {
@@ -570,6 +682,11 @@ export default function CommandCenterPage() {
               </span>
             );
           })}
+          {gads && gSpend > 0 && (
+            <span className="inline-flex items-center gap-1.5 text-[14px] font-semibold px-2.5 py-1 rounded-full bg-[#FEFCE8] text-[#A16207]">
+              <Megaphone size={12} /> Google Ads <span className="opacity-70">· {gads.conversionValue > 0 ? `${gads.roas}x ROAS` : `${gads.conversions.toLocaleString("en-IN")} conversions`}</span>
+            </span>
+          )}
           <span className="text-[13px] text-[#A1A1AA] ml-auto hidden md:block">Each objective judged by its own KPI - not one blended number</span>
         </div>
       )}
@@ -577,12 +694,12 @@ export default function CommandCenterPage() {
       {/* ── SECTION 2: Objective-aware KPI cards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
         <StatCard label="Gross Sales" value={k ? formatINR(k.grossSales) : "-"} spark={revSpark} sparkColor="#F97316"
-          sub={k ? <>Avg <b>{formatINR(dailyRunRate)}</b>/day{salesTarget > 0 && <> · need <b className="text-[#EA580C]">{formatINR(neededPerDay)}</b>/day to hit {formatINR(salesTarget)}</>}{salesChange !== undefined && <> · <span className={salesChange >= 0 ? "text-[#16A34A]" : "text-[#EF4444]"}>{salesChange >= 0 ? "+" : ""}{salesChange}% vs {compLabel}</span></>}</> : undefined} />
+          sub={k ? <>Avg <b>{formatINR(dailyRunRate)}</b>/day{salesTarget > 0 && monthSales !== null && <> · need <b className="text-[#EA580C]">{formatINR(neededPerDay)}</b>/day to hit this month&apos;s {formatINR(salesTarget)}</>}{salesChange !== undefined && <> · <span className={salesChange >= 0 ? "text-[#16A34A]" : "text-[#EF4444]"}>{salesChange >= 0 ? "+" : ""}{salesChange}% vs {compLabel}</span></>}</> : undefined} />
 
-        {sales.count > 0 || !leadsB.count ? (
-          <StatCard label="Sales ROAS" value={sales.spend > 0 ? `${sales.roas}x` : "-"}
-            tone={econ?.breakEvenRoas ? (sales.roas >= econ.breakEvenRoas ? "good" : "bad") : (sales.roas >= 3 ? "good" : sales.roas >= 2 ? "warn" : "bad")}
-            sub={sales.spend > 0 ? <>{econ?.breakEvenRoas ? <>break-even <b>{econ.breakEvenRoas}x</b> · </> : ""}{formatINR(sales.spend)} spend → {formatINR(sales.purchaseValue)}</> : "No sales campaigns"} />
+        {sales.count > 0 || gSpend > 0 || !leadsB.count ? (
+          <StatCard label="Sales ROAS" value={adSpendForSales > 0 ? `${salesRoasAll}x` : "-"}
+            tone={adSpendForSales === 0 ? "neutral" : econ?.breakEvenRoas ? (salesRoasAll >= econ.breakEvenRoas ? "good" : "bad") : (salesRoasAll >= 3 ? "good" : salesRoasAll >= 2 ? "warn" : "bad")}
+            sub={adSpendForSales > 0 ? <>{sales.spend > 0 && gads && gSpend > 0 ? <>Meta {sales.roas}x · Google {gads.roas}x · </> : gSpend > 0 ? "Google Ads · " : ""}{econ?.breakEvenRoas ? <>break-even <b>{econ.breakEvenRoas}x</b> · </> : ""}{formatINR(adSpendForSales)} spend → {formatINR(adSalesValue)}</> : "No sales campaigns"} />
         ) : (
           <StatCard label="Cost / Lead" value={leadsB.leads > 0 ? formatINR(leadsB.cpl) : "-"} tone={leadsB.cpl > 0 && leadsB.cpl <= 200 ? "good" : "warn"}
             sub={<>{leadsB.leads} leads · {formatINR(leadsB.spend)} spend</>} />
@@ -593,7 +710,9 @@ export default function CommandCenterPage() {
 
         <StatCard label="Total Ad Spend" value={totalSpend > 0 ? formatINR(totalSpend) : "-"} spark={spendSpark} sparkColor="#3B82F6"
           tone={meta && meta.spend > 0 && meta.purchaseValue === 0 && sales.count > 0 ? "bad" : "neutral"}
-          sub={meta ? (meta.spend > 0 && meta.purchaseValue === 0 && sales.count > 0 ? <span className="text-[#EF4444] font-semibold">₹0 tracked revenue - likely pixel issue</span> : <>{connections.gads ? "Meta + Google" : "Meta"}{spendChange !== undefined && <> · <span className={spendChange > 25 ? "text-[#EF4444]" : "text-[#A1A1AA]"}>{spendChange >= 0 ? "+" : ""}{spendChange}% vs {compLabel}</span></>}</>) : "Connect Meta"} />
+          sub={meta && meta.spend > 0 && meta.purchaseValue === 0 && sales.count > 0 ? <span className="text-[#EF4444] font-semibold">₹0 tracked on Meta - likely pixel issue</span>
+            : meta || gads ? <>{meta && gads ? <>Meta {formatINR(meta.spend)} · Google {formatINR(gads.spend)}</> : meta ? "Meta" : "Google Ads"}{spendChange !== undefined && <> · <span className={spendChange > 25 ? "text-[#EF4444]" : "text-[#A1A1AA]"}>{spendChange >= 0 ? "+" : ""}{spendChange}% vs {compLabel}</span></>}</>
+            : loading ? undefined : "Connect Meta or Google Ads"} />
 
         {leadsB.count > 0 ? (
           <StatCard label="Total Leads" value={totalLeads.toString()}
@@ -603,7 +722,7 @@ export default function CommandCenterPage() {
         )}
 
         <StatCard label={gsc ? "Search Clicks" : "New Customers"} value={gsc ? gsc.clicks.toLocaleString("en-IN") : (k?.newCustomers.toString() ?? "-")}
-          sub={gsc ? (gscPending ? <span className="text-[#B45309] font-semibold">Search Console finalises ~2–3 days late - this window is too recent to report yet</span> : gscOpp.count > 0 ? <span className="text-[#16A34A] font-semibold">{gscOpp.count} keywords at pos 11–15 → ~+{gscOpp.extraClicks} clicks one push from page 1</span> : <>{gsc.ctr.toFixed(1)}% CTR · pos {gsc.avgPosition.toFixed(1)}</>) : (k ? "Connect GSC for search data" : undefined)} />
+          sub={gsc ? (gscPending ? <span className="text-[#B45309] font-semibold">Search Console finalises ~2-3 days late - this window is too recent to report yet</span> : gscOpp.count > 0 ? <span className="text-[#16A34A] font-semibold">{gscOpp.count} keywords at pos 11–15 → ~+{gscOpp.extraClicks} clicks one push from page 1</span> : <>{gsc.ctr.toFixed(1)}% CTR · pos {gsc.avgPosition.toFixed(1)}</>) : (k ? "Connect GSC for search data" : undefined)} />
       </div>
 
       {/* ── Visual snapshot: channel mix · cash split · pace ── */}
@@ -621,13 +740,13 @@ export default function CommandCenterPage() {
             <CardHeader title={salesTarget > 0 ? "Monthly goal pace" : "Month progress"} right={<span className="text-[13px] text-[#A1A1AA]">{salesTarget > 0 ? formatINR(salesTarget) : "this month"}</span>} />
             <div className="pt-2">
               <Gauge
-                value={goalPct ?? Math.round(today.getDate() / new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() * 100)}
+                value={goalPct !== null ? Math.min(goalPct, 100) : Math.round(today.getDate() / new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() * 100)}
                 color={goalPct !== null && goalPct >= 100 ? "#22C55E" : "#F97316"}
                 centerValue={goalPct !== null ? `${goalPct}%` : undefined}
                 centerLabel={salesTarget > 0 ? "of target" : "of month elapsed"}
               />
-              {salesTarget > 0 && k && (
-                <div className="text-center text-[13px] text-[#A1A1AA] mt-1">{formatINR(k.grossSales)} of {formatINR(salesTarget)}{neededPerDay > 0 && <> · need {formatINR(neededPerDay)}/day</>}</div>
+              {salesTarget > 0 && monthSales !== null && (
+                <div className="text-center text-[13px] text-[#A1A1AA] mt-1">{formatINR(monthSales)} of {formatINR(salesTarget)} ({monthDates}){neededPerDay > 0 && <> · need {formatINR(neededPerDay)}/day</>}</div>
               )}
             </div>
           </Card>
@@ -698,10 +817,10 @@ export default function CommandCenterPage() {
                 </ResponsiveContainer>
               )}
             <div className="mt-3 pt-3 border-t border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-1.5 text-[14px] text-[#A1A1AA]"><TrendingUp size={12} className="text-[#F97316]" /> At current pace ({days}d)</div>
+              <div className="flex items-center gap-1.5 text-[14px] text-[#A1A1AA]"><TrendingUp size={12} className="text-[#F97316]" /> Month so far ({monthDates}) at this pace</div>
               <div className="flex items-center gap-3">
                 {(k?.refundedRevenue ?? 0) > 0 && <span className="text-[14px] text-[#A1A1AA]">Returns: <b className="text-[#EF4444]">−{formatINR(k!.refundedRevenue!)}</b></span>}
-                {anomalies && anomalies.summary.projectedMonthly > 0 && <span className="text-[15px] font-bold text-[#EA580C] dark:text-[#FB923C]">{formatINR(anomalies.summary.projectedMonthly)} projected</span>}
+                {anomalies && anomalies.summary.projectedMonthly > 0 && <span className="text-[15px] font-bold text-[#EA580C] dark:text-[#FB923C]">{formatINR(anomalies.summary.projectedMonthly)} projected for the month</span>}
               </div>
             </div>
           </Card>
@@ -717,20 +836,28 @@ export default function CommandCenterPage() {
             <PlatformRow name="Meta Ads" connected={connections.meta} connectHref="/dashboard/connections"
               main={meta ? formatINR(meta.spend) : "-"} mainSub={activeObjs.length ? activeObjs.map(b => `${OBJ_META[b.obj].label}`).join(" + ") : "spend"}
               right={sales.count > 0 ? `${sales.roas}x ROAS` : leadsB.count > 0 ? `${formatINR(leadsB.cpl)}/lead` : ""} rightSub={meta ? `freq ${meta.frequency}x${meta.frequency >= 3 ? " ⚠" : ""}` : ""} rightTone={meta && meta.frequency >= 3 ? "warn" : "neutral"} />
+            {gads ? (
+              <PlatformRow name="Google Ads" connected
+                main={formatINR(gads.spend)} mainSub={`${gads.conversions.toLocaleString("en-IN")} conversions · ${gads.clicks.toLocaleString("en-IN")} clicks`}
+                right={gads.conversionValue > 0 ? `${gads.roas}x ROAS` : ""} rightSub={gads.clicks > 0 ? `${formatINR(gads.avgCpc)} per click` : ""}
+                rightTone={gads.conversionValue === 0 ? "neutral" : gads.roas >= (econ?.breakEvenRoas ?? ROAS_TARGET) ? "good" : "bad"} />
+            ) : (
+              <div className="py-3 border-b border-black/[0.06] dark:border-white/[0.06]">
+                <div className="flex items-center gap-1.5 mb-1.5"><span className={cn("w-1.5 h-1.5 rounded-full", gadsIssue ? "bg-[#EAB308]" : "bg-[#D4D4D4]")} /><span className="text-[14px] font-bold text-[#18181B] dark:text-[#F4F4F5]">Google Ads</span></div>
+                {gadsIssue ? (
+                  <>
+                    <div className="text-[13px] text-[#71717A] dark:text-[#A1A1AA] leading-snug">{gadsIssueText(gadsIssue)}</div>
+                    {["no_customer_selected", "no_account_access"].includes(gadsIssue.kind) && <Link href="/dashboard/connections" className="text-[14px] text-[#F97316] font-semibold">Go to Connections →</Link>}
+                  </>
+                ) : !loading && <Link href="/dashboard/connections" className="text-[14px] text-[#F97316] font-semibold">Connect - you may be flying blind on spend here →</Link>}
+              </div>
+            )}
             <PlatformRow name="Search Console" connected={connections.gsc} connectHref="/dashboard/connections"
-              main={gsc ? gsc.clicks.toLocaleString("en-IN") : "-"} mainSub={gscPending ? "lags 2–3 days - too recent" : gsc ? `${gsc.impressions.toLocaleString("en-IN")} impressions` : ""}
+              main={gsc ? gsc.clicks.toLocaleString("en-IN") : "-"} mainSub={gscPending ? "lags 2-3 days - too recent" : gsc ? `${gsc.impressions.toLocaleString("en-IN")} impressions` : ""}
               right={gsc ? `pos ${gsc.avgPosition.toFixed(1)}` : ""} rightSub={gscOpp.count > 0 ? `${gscOpp.count} near page 1` : `${gsc?.ctr.toFixed(1) ?? "-"}% CTR`} rightTone={gscOpp.count > 0 ? "good" : "neutral"} />
             <PlatformRow name="Analytics GA4" connected={connections.ga4} connectHref="/dashboard/connections"
               main={ga4 ? ga4.sessions.toLocaleString("en-IN") : "-"} mainSub={ga4 ? `${ga4.users.toLocaleString("en-IN")} users` : ""}
               right={ga4 ? `${ga4.bounceRate.toFixed(0)}% bounce` : ""} rightSub={ga4?.avgSessionMin ?? ""} />
-            {!connections.gads && (
-              <div className="py-3">
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-[#D4D4D4]" /><span className="text-[14px] font-bold text-[#18181B] dark:text-[#F4F4F5]">Google Ads</span></div>
-                </div>
-                <Link href="/dashboard/connections" className="text-[14px] text-[#F97316] font-semibold">Connect - you may be flying blind on spend here →</Link>
-              </div>
-            )}
           </div>
         </Card>
       </div>
@@ -742,7 +869,7 @@ export default function CommandCenterPage() {
             title="Conversion Funnel"
             right={
               <div className="flex items-center gap-1 bg-[#F5F5F4] dark:bg-[#1C1C1C] rounded-lg p-0.5">
-                {(["meta", "ga4", "shopify"] as const).map(src => {
+                {(["meta", "google", "ga4", "shopify"] as const).map(src => {
                   const ok = funnels[src].available;
                   return (
                     <button
@@ -851,7 +978,7 @@ export default function CommandCenterPage() {
             className="flex-1 bg-[#F5F5F4] dark:bg-[#1C1C1C] border border-black/[0.06] dark:border-white/[0.06] rounded-xl px-3 py-2 text-[15px] dark:text-[#F4F4F5] outline-none focus:border-[#F97316]" />
           <button onClick={() => askAI()} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[15px] font-bold bg-[#F97316] hover:bg-[#EA580C] text-white transition-colors"><Send size={13} /> Ask AI</button>
         </div>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+        <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
           {quickActions.map(a => (
             <Link key={a.href} href={a.href} className="group flex flex-col items-center gap-1.5 p-2.5 rounded-xl border border-black/[0.05] dark:border-white/[0.05] bg-[#FAFAF9] dark:bg-[#1C1C1C] hover:border-[#F97316] hover:bg-[#FFF7ED] dark:hover:bg-[#2A1A0E] transition-all text-center">
               <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", a.color)}><a.icon size={14} /></div>
@@ -867,7 +994,7 @@ export default function CommandCenterPage() {
 
 /* ─── Platform snapshot row ─────────────────────────────────── */
 function PlatformRow({ name, connected, connectHref, main, mainSub, right, rightSub, rightTone = "neutral" }: {
-  name: string; connected: boolean; connectHref?: string; main: string; mainSub: string; right?: string; rightSub?: string; rightTone?: "good" | "warn" | "neutral";
+  name: string; connected: boolean; connectHref?: string; main: string; mainSub: string; right?: string; rightSub?: string; rightTone?: "good" | "warn" | "bad" | "neutral";
 }) {
   return (
     <div className={cn("py-3 border-b border-black/[0.06] dark:border-white/[0.06] last:border-0", !connected && "opacity-60")}>
@@ -877,7 +1004,7 @@ function PlatformRow({ name, connected, connectHref, main, mainSub, right, right
       {connected ? (
         <div className="flex items-center justify-between">
           <div><div className="text-[18px] font-black text-[#18181B] dark:text-[#F4F4F5]">{main}</div><div className="text-[13px] text-[#A1A1AA]">{mainSub}</div></div>
-          {right && <div className="text-right"><div className={cn("text-[14px] font-semibold", rightTone === "good" ? "text-[#16A34A]" : rightTone === "warn" ? "text-[#B45309]" : "text-[#52525B] dark:text-[#A1A1AA]")}>{right}</div><div className="text-[13px] text-[#A1A1AA]">{rightSub}</div></div>}
+          {right && <div className="text-right"><div className={cn("text-[14px] font-semibold", rightTone === "good" ? "text-[#16A34A]" : rightTone === "warn" ? "text-[#B45309]" : rightTone === "bad" ? "text-[#EF4444]" : "text-[#52525B] dark:text-[#A1A1AA]")}>{right}</div><div className="text-[13px] text-[#A1A1AA]">{rightSub}</div></div>}
         </div>
       ) : (
         <Link href={connectHref ?? "/dashboard/connections"} className="text-[14px] text-[#F97316] font-semibold">Connect {name} →</Link>

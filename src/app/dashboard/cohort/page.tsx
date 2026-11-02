@@ -4,6 +4,8 @@ import { BarChart2 } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { InsightCard } from "@/components/ui/insight-card";
 import { BarRow } from "@/components/ui/bar-row";
+import { PeriodNote } from "@/components/ui/period";
+import { formatDateSpan } from "@/lib/date-range-context";
 import { formatINR } from "@/lib/utils";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
@@ -32,6 +34,7 @@ interface CohortData {
   matrix: CohortRow[];
   revenueByMonth: RevenueBar[];
   insights: CohortInsights;
+  period: { from: string; to: string };
 }
 
 function retentionColor(val: number | null): string {
@@ -91,7 +94,7 @@ export default function CohortPage() {
 
   function handleExportCSV() { exportToCSV("skylitee-cohort", buildSections()); }
   async function handleExportPDF() {
-    await exportToPDF("skylitee-cohort", "Cohort Analysis", "Customer retention curves by acquisition month · Shopify", buildSections());
+    await exportToPDF("skylitee-cohort", "Cohort Analysis", `Customer retention curves by acquisition month · Shopify${data?.period ? ` · ${formatDateSpan(data.period.from, data.period.to)}` : ""}`, buildSections());
   }
 
   return (
@@ -102,6 +105,7 @@ export default function CohortPage() {
           <p className="text-[17px] text-[#686864] dark:text-[#A1A1AA] mt-0.5">
             Customer retention curves by acquisition month - real Shopify data
           </p>
+          {data?.period && <PeriodNote from={data.period.from} to={data.period.to} label="Customers who first bought in the last 6 months" />}
         </div>
         <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} disabled={!data} />
       </div>

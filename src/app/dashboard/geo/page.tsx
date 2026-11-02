@@ -8,7 +8,8 @@ import { BarRow } from "@/components/ui/bar-row";
 import { formatINR } from "@/lib/utils";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
 
 interface CityRevenue { city: string; revenue: number; }
 interface CityCustomers { city: string; count: number; pct: number; }
@@ -46,7 +47,7 @@ export default function GeoPage() {
     });
     return [
       {
-        title: `Geo KPIs (${range.label})`,
+        title: `Geo KPIs (${rangeText(range)})`,
         headers: ["Metric", "Value"],
         rows: [
           ["Top City", topCity?.city ?? "-"],
@@ -66,7 +67,7 @@ export default function GeoPage() {
 
   function handleExportCSV() { exportToCSV("skylitee-geo", buildSections()); }
   async function handleExportPDF() {
-    await exportToPDF("skylitee-geo", "Geo Performance", `City-level revenue & buyers · Shopify · ${range.label}`, buildSections());
+    await exportToPDF("skylitee-geo", "Geo Performance", `City-level revenue & buyers · Shopify · ${rangeText(range)}`, buildSections());
   }
 
   // Merge city data
@@ -81,7 +82,7 @@ export default function GeoPage() {
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold flex items-center gap-2"><MapPin size={18} className="text-[#F97316]" /> Geo Performance</h2>
-            <span className="text-[13px] font-semibold text-[#0d6b4f] bg-[#e0f5ee] px-2 py-0.5 rounded-full">{range.label}</span>
+            <span className="text-[13px] font-semibold text-[#0d6b4f] bg-[#e0f5ee] px-2 py-0.5 rounded-full"><RangeText /></span>
           </div>
           <p className="text-[17px] text-[#686864] mt-0.5">City-level revenue &amp; buyers from Shopify · change the date range up top</p>
         </div>
@@ -91,7 +92,7 @@ export default function GeoPage() {
       {loading ? (
         <div className="text-[17px] text-[#686864] py-8 text-center">Loading real geo data...</div>
       ) : revenueByCity.length === 0 ? (
-        <div className="text-[17px] text-[#686864] py-8 text-center">No geo data for {range.label} - orders need shipping addresses to show city data.</div>
+        <div className="text-[17px] text-[#686864] py-8 text-center">No geo data for <RangeText /> - orders need shipping addresses to show city data.</div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
@@ -102,12 +103,12 @@ export default function GeoPage() {
               value={topCity ? `${Math.round((topCity.revenue / Math.max(totalRevenue, 1)) * 100)}%` : "-"}
               sub="of total revenue"
             />
-            <KPICard label="Buyers tracked" value={totalBuyers.toString()} sub={`With location data · ${range.label}`} />
+            <KPICard label="Buyers tracked" value={totalBuyers.toString()} sub={`With location data · ${formatDateSpan(range.from, range.to)}`} />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <Card>
-              <CardHeader title="City performance" right={`By revenue · ${range.label}`} />
+              <CardHeader title="City performance" right={`By revenue · ${formatDateSpan(range.from, range.to)}`} />
               <div className="overflow-x-auto">
                 <table className="w-full text-[17px] border-collapse">
                   <thead>
@@ -155,7 +156,7 @@ export default function GeoPage() {
               <Card>
                 <CardHeader title="Geo AI insights" />
                 {topCity && (
-                  <InsightCard title={`${topCity.city} is your top market`} body={`${Math.round((topCity.revenue / Math.max(totalRevenue, 1)) * 100)}% of revenue in ${range.label}. Run city-specific Meta ads targeting ${topCity.city} for higher relevance and lower CPMs.`} />
+                  <InsightCard title={`${topCity.city} is your top market`} body={`${Math.round((topCity.revenue / Math.max(totalRevenue, 1)) * 100)}% of revenue in ${formatDateSpan(range.from, range.to)}. Run city-specific Meta ads targeting ${topCity.city} for higher relevance and lower CPMs.`} />
                 )}
                 {revenueByCity.length >= 3 && (
                   <InsightCard type="info" title="Multi-city presence detected" body={`Revenue spread across ${revenueByCity.length} cities. Consider city-specific delivery speed messaging in ads - converts better in metros.`} />

@@ -11,7 +11,9 @@ import { formatINR, cn } from "@/lib/utils";
 
 export interface GlanceData {
   periodLabel: string;                 // "Today", "This month"…
-  compLabel: string;                   // "Yesterday", "prev period"…
+  periodText: string;                  // "This month (1 - 2 Nov 2026)"
+  periodDates: string;                 // "1 - 2 Nov 2026"
+  compLabel: string;                   // "Yesterday, full day (1 Nov 2026)"…
   shop: { sales: number; orders: number; aov: number; prepaidRevenue: number; codRevenue: number; prepaidOrders: number; codOrders: number } | null;
   compShop: { sales: number; orders: number } | null;
   meta: { spend: number; clicks: number; purchases: number; purchaseValue: number; leads: number } | null;
@@ -92,9 +94,11 @@ export function Glance({ d, loading }: { d: GlanceData; loading: boolean }) {
   const CHANNEL_COLORS = ["#6366F1", "#8B5CF6", "#A78BFA", "#C4B5FD"];
 
   return (
+    <div className="space-y-2">
+    <div className="text-[13px] text-[#71717A] dark:text-[#A1A1AA]">These numbers cover <b className="font-semibold">{d.periodText}</b></div>
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
       {/* 1 · Sales */}
-      <GlanceCard icon={ShoppingCart} iconColor="text-[#F97316]" title="Sales" sub={d.periodLabel}>
+      <GlanceCard icon={ShoppingCart} iconColor="text-[#F97316]" title="Sales" sub={d.periodDates}>
         {!s ? <NotConnected what="Shopify" /> : (<>
           <div className="grid grid-cols-3 gap-2 mb-3">
             <Stat label="Sales" value={formatINR(s.sales)} />
@@ -102,7 +106,7 @@ export function Glance({ d, loading }: { d: GlanceData; loading: boolean }) {
             <Stat label="Avg order" value={formatINR(s.aov)} />
           </div>
           <Bars money rows={[
-            { label: d.periodLabel, value: s.sales, color: "#F97316", hint: `${n(s.orders)} orders` },
+            { label: d.periodDates, value: s.sales, color: "#F97316", hint: `${n(s.orders)} orders` },
             ...(d.compShop ? [{ label: d.compLabel, value: d.compShop.sales, color: "#FDBA74", hint: `${n(d.compShop.orders)} orders` }] : []),
           ]} />
         </>)}
@@ -173,7 +177,13 @@ export function Glance({ d, loading }: { d: GlanceData; loading: boolean }) {
                 <div className="grid grid-cols-3 gap-2">
                   <Stat label="Spent" value={formatINR(d.gads.spend)} />
                   <Stat label="Clicks" value={n(d.gads.clicks)} />
-                  <Stat label="Sales from ads" value={n(d.gads.conversions)} />
+                  <Stat label="Conversions" value={n(d.gads.conversions)} />
+                </div>
+                <div className="mt-2.5">
+                  <Bars money rows={[
+                    { label: "Spent on ads", value: d.gads.spend, color: "#EAB308" },
+                    { label: "Sales Google tracked", value: d.gads.conversionValue, color: "#22C55E" },
+                  ]} />
                 </div>
               </div>
             )}
@@ -195,6 +205,7 @@ export function Glance({ d, loading }: { d: GlanceData; loading: boolean }) {
           </div>
         )}
       </GlanceCard>
+    </div>
     </div>
   );
 }

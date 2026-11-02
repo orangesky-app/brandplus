@@ -4,7 +4,8 @@ import { createPortal } from "react-dom";
 import { NotConnected } from "@/components/ui/not-connected";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
 import { formatINR, formatNumber } from "@/lib/utils";
 import { Image as ImageIcon, Images, Video, Film, Play, MousePointerClick, LayoutGrid, TrendingUp, AlertTriangle, Info, X } from "lucide-react";
 import { ExportButton } from "@/components/ui/export-button";
@@ -477,7 +478,7 @@ export default function CreativePage() {
     await exportToPDF(
       `skylitee-creatives-${range.from}`,
       "Meta Ad Creatives Report",
-      `${data?.adAccountName ?? "Meta Ads"} · ${range.from} → ${range.to}`,
+      `${data?.adAccountName ?? "Meta Ads"} · ${formatDateSpan(range.from, range.to)}`,
       buildSections()
     );
   }
@@ -487,7 +488,7 @@ export default function CreativePage() {
       <div className="flex items-start justify-between mb-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2"><LayoutGrid size={18} className="text-[#F97316]" /> Creative Studio</h2>
-          <p className="text-[17px] text-[#686864] mt-0.5">AI creative scoring · fatigue detection · performance ranking</p>
+          <p className="text-[17px] text-[#686864] mt-0.5">AI creative scoring · fatigue detection · performance ranking · <RangeText /></p>
         </div>
         {ads.length > 0 && <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} />}
       </div>

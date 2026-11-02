@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import { ExternalLink, FileText } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
+import { formatDateSpan } from "@/lib/date-range-context";
 import {
   BenchmarkNote, DataTable, DiagPanel, EmptyNote, GadsGate, GadsHeader, GoogleCountNote, Judged, Pills,
   PartialNotice, VerdictBadge, useGadsSection, type Column,
@@ -357,7 +358,7 @@ export default function GadsAdsPage() {
       <GadsHeader
         icon={FileText}
         title="Ads & Ad Copy"
-        subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}` : "Ad-wise results, full copy, products and landing pages"}
+        subtitle={state.data ? `${state.data.account} · ${formatDateSpan(state.data.period.from, state.data.period.to)}` : "Ad-wise results, full copy, products and landing pages"}
       />
       <GoogleCountNote />
       <GadsGate state={state}>{d => <AdsView d={d} />}</GadsGate>

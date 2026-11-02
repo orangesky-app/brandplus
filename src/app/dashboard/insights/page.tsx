@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Card, CardHeader } from "@/components/ui/card";
+import { PeriodNote } from "@/components/ui/period";
+import { formatDateSpan } from "@/lib/date-range-context";
 import { formatINR } from "@/lib/utils";
 import { Brain, RefreshCw, TrendingUp } from "lucide-react";
 import Link from "next/link";
@@ -19,6 +21,7 @@ interface InsightMetrics {
 export default function InsightsPage() {
   const [insights, setInsights] = useState<string>("");
   const [metrics, setMetrics] = useState<InsightMetrics | null>(null);
+  const [period, setPeriod] = useState<{ from: string; to: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [adsConnected, setAdsConnected] = useState(false);
@@ -45,6 +48,7 @@ export default function InsightsPage() {
         if (d.error) { setError("Could not load - check Shopify connection"); return; }
         setInsights(d.insights);
         setMetrics(d.metrics);
+        setPeriod(d.period ?? null);
       })
       .catch(() => setError("Failed to generate insights"))
       .finally(() => setLoading(false));
@@ -68,6 +72,7 @@ export default function InsightsPage() {
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2"><Brain size={18} className="text-[#F97316]" /> AI Insights</h2>
           <p className="text-[17px] text-[#686864] mt-0.5">Claude AI · analysing your real Shopify data</p>
+          {period && <PeriodNote from={period.from} to={period.to} label="This month so far" />}
         </div>
         <button
           onClick={fetchInsights}
@@ -78,12 +83,12 @@ export default function InsightsPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div>
           {/* Metrics summary */}
           {metrics && (
             <Card className="mb-3">
-              <CardHeader title="Store snapshot" right={`${metrics.days} days this month`} />
+              <CardHeader title="Store snapshot" right={period ? formatDateSpan(period.from, period.to) : `${metrics.days} days this month`} />
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { label: "Revenue so far", value: formatINR(metrics.grossSales) },

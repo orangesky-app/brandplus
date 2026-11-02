@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { shopifyFetchAll, isRealOrder, orderRevenue, ShopifyOrder, ORDER_FIELDS } from "@/lib/shopify";
+import { shopifyFetchAll, isRealOrder, orderRevenue, getShopTimezone, ShopifyOrder, ORDER_FIELDS } from "@/lib/shopify";
 import { getShopifySession } from "@/lib/session";
+import { todayInTz, ymdInTz } from "@/lib/timezone";
 
 // Cohorts need each customer's FULL order history (to find their true first order), so we
 // fetch all-time rather than a window - but paginated (up to 25k orders) and filtered to
@@ -34,6 +35,11 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ error: "not_connected" }, { status: 401 });
   const { shop, token } = session;
 
+  // Months as the store sees them: on the server's UTC clock, an order placed just after
+  // midnight on the 1st in India would land in the month before.
+  const tz = await getShopTimezone(shop, token);
+  const orderMonth = (d: Date) => ymdInTz(d, tz).slice(0, 7);
+
   const rawOrders = await fetchAllOrders(shop, token);
 
   // Group orders by customer
@@ -51,7 +57,7 @@ export async function GET(req: NextRequest) {
   // Determine each customer's acquisition cohort (month of first order)
   const customerCohort = new Map<number, string>();
   customerOrders.forEach((orders, customerId) => {
-    customerCohort.set(customerId, monthKey(orders[0].date));
+    customerCohort.set(customerId, orderMonth(orders[0].date));
   });
 
   // Build cohort sets and revenue
@@ -67,14 +73,10 @@ export async function GET(req: NextRequest) {
   });
 
   // Last 6 calendar months (oldest → newest)
-  const now = new Date();
+  const today = todayInTz(tz);
+  const nowKey = today.slice(0, 7);
   const cohortMonths: string[] = [];
-  for (let i = 5; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    cohortMonths.push(monthKey(d));
-  }
-
-  const nowKey = monthKey(now);
+  for (let i = 5; i >= 0; i--) cohortMonths.push(addMonths(nowKey, -i));
 
   const matrix = cohortMonths.map((cohort) => {
     const customers = cohortCustomers.get(cohort)?.size ?? 0;
@@ -99,13 +101,10 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      const [ty, tm] = targetKey.split("-").map(Number);
       let count = 0;
       cohortCustomers.get(cohort)?.forEach((customerId) => {
         const orders = customerOrders.get(customerId) ?? [];
-        const bought = orders.some(
-          (o) => o.date.getFullYear() === ty && o.date.getMonth() + 1 === tm
-        );
+        const bought = orders.some((o) => orderMonth(o.date) === targetKey);
         if (bought) count++;
       });
 
@@ -152,5 +151,6 @@ export async function GET(req: NextRequest) {
     matrix,
     revenueByMonth,
     insights: { bestMonth1, avgMonth2, totalCustomers, avgOrderValue },
+    period: { from: `${cohortMonths[0]}-01`, to: today },
   });
 }

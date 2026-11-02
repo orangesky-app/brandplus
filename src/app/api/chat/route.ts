@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { shopifyFetchAll, fetchOrdersInRange, orderRevenue, resolveShopifyPeriod, isCodGateway, ShopifyProduct } from "@/lib/shopify";
+import { shopifyFetchAll, fetchOrdersInRange, orderRevenue, resolveShopifyPeriod, getShopTimezone, isCodGateway, ShopifyProduct } from "@/lib/shopify";
+import { daysAgoInTz, formatDateSpan, todayInTz } from "@/lib/timezone";
 import { NextRequest } from "next/server";
 import { getShopifySession } from "@/lib/session";
 import { shopKv } from "@/lib/kv";
@@ -20,16 +21,17 @@ interface Ga4Row { dimensionValues: { value: string }[]; metricValues: { value: 
 
 // ── Shopify ────────────────────────────────────────────────────────────────────
 
-async function buildStoreContext(req: NextRequest): Promise<{ context: string; shop: string | null }> {
+async function buildStoreContext(req: NextRequest): Promise<{ context: string; shop: string | null; tz: string }> {
   const session = await getShopifySession(req);
-  if (!session) return { context: "No Shopify store connected.", shop: null };
+  if (!session) return { context: "No Shopify store connected.", shop: null, tz: "UTC" };
   const { shop, token } = session;
+  const tz = await getShopTimezone(shop, token);
 
   try {
-    const now = new Date();
-    const days = now.getDate();
-    // Month-to-date in the store's timezone.
-    const { startISO } = await resolveShopifyPeriod(shop, token, null, null);
+    // Month-to-date in the store's timezone: the server's clock is UTC and can be a day behind.
+    const { startISO, startYmd, endYmd, days } = await resolveShopifyPeriod(shop, token, null, null);
+    const [startY, startM] = startYmd.split("-").map(Number);
+    const daysInMonth = new Date(startY, startM, 0).getDate();
 
     const [orders, products, customers] = await Promise.all([
       fetchOrdersInRange(shop, token, startISO),
@@ -55,10 +57,11 @@ async function buildStoreContext(req: NextRequest): Promise<{ context: string; s
 
     return {
       shop,
+      tz,
       context: `
-Store: ${shop} | Date: ${now.toDateString()} (day ${days} of month)
-Revenue this month: ₹${grossSales} | Orders: ${totalOrders} | AOV: ₹${aov}
-Daily avg: ₹${dailyAvg} → projected ₹${dailyAvg * 30}/month
+Store: ${shop} | Today: ${formatDateSpan(endYmd, endYmd)} (day ${days} of ${daysInMonth})
+Revenue this month (${formatDateSpan(startYmd, endYmd)}): ₹${grossSales} | Orders: ${totalOrders} | AOV: ₹${aov}
+Daily avg: ₹${dailyAvg} → projected ₹${dailyAvg * daysInMonth}/month
 COD: ${codPct}% (${codOrders}/${totalOrders} orders)
 Customers: ${totalCustomers} total | Repeat rate: ${repeatRate}% | Avg LTV: ₹${avgLTV}
 Top products:
@@ -66,13 +69,13 @@ ${productList}
 `.trim(),
     };
   } catch {
-    return { context: "Could not load Shopify data at this time.", shop };
+    return { context: "Could not load Shopify data at this time.", shop, tz };
   }
 }
 
 // ── Meta Ads ──────────────────────────────────────────────────────────────────
 
-async function buildMetaContext(_req: NextRequest, shop: string): Promise<string> {
+async function buildMetaContext(_req: NextRequest, shop: string, tz: string): Promise<string> {
   const token = await shopKv.getMetaToken(shop);
   if (!token) return "Meta Ads: not connected.";
 
@@ -87,9 +90,8 @@ async function buildMetaContext(_req: NextRequest, shop: string): Promise<string
     if (!account) return "Meta Ads: no ad account selected yet.";
     const cur = account.currency === "INR" ? "₹" : account.currency === "USD" ? "$" : account.currency + " ";
 
-    const now = new Date();
-    const to = now.toISOString().split("T")[0];
-    const from = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const to = todayInTz(tz);
+    const from = daysAgoInTz(tz, 27);
     const timeRange = encodeURIComponent(JSON.stringify({ since: from, until: to }));
 
     const [overviewRes, campaignRes] = await Promise.all([
@@ -107,7 +109,7 @@ async function buildMetaContext(_req: NextRequest, shop: string): Promise<string
     ).join("\n");
 
     return `
-Meta Ads (last 28 days · ${account.name}):
+Meta Ads (last 28 days, ${formatDateSpan(from, to)} · ${account.name}):
 Spend: ${cur}${parseFloat(o?.spend ?? "0").toFixed(2)} | Impressions: ${parseInt(o?.impressions ?? "0").toLocaleString()}
 Clicks: ${parseInt(o?.clicks ?? "0").toLocaleString()} | CTR: ${parseFloat(o?.ctr ?? "0").toFixed(2)}%
 CPC: ${cur}${parseFloat(o?.cpc ?? "0").toFixed(2)} | CPM: ${cur}${parseFloat(o?.cpm ?? "0").toFixed(2)}
@@ -130,9 +132,10 @@ async function buildGscContext(shop: string): Promise<string> {
     if (!siteUrl) return "Google Search Console: connected but no site selected.";
 
     const token = await getGoogleAccessToken(refreshToken);
-    const now = new Date();
-    const endDate = now.toISOString().split("T")[0];
-    const startDate = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    // Search Console runs on Pacific time and finalises about 3 days late, same window as /api/gsc.
+    const PT = "America/Los_Angeles";
+    const endDate = daysAgoInTz(PT, 3);
+    const startDate = daysAgoInTz(PT, 30);
 
     const query = (extra: object) =>
       fetch(
@@ -158,7 +161,7 @@ async function buildGscContext(shop: string): Promise<string> {
       .join("\n");
 
     return `
-Google Search Console (last 28 days · ${siteUrl}):
+Google Search Console (${formatDateSpan(startDate, endDate)}, Google shares this data about 3 days late · ${siteUrl}):
 Clicks: ${t.clicks} | Impressions: ${t.impressions}
 CTR: ${(t.ctr * 100).toFixed(2)}% | Avg position: ${t.position.toFixed(1)}
 Top keywords:
@@ -171,7 +174,7 @@ ${topKeywords || "  No keyword data"}
 
 // ── Google Analytics 4 ────────────────────────────────────────────────────────
 
-async function buildGa4Context(shop: string): Promise<string> {
+async function buildGa4Context(shop: string, tz: string): Promise<string> {
   try {
     const refreshToken = await shopKv.getGa4Token(shop);
     if (!refreshToken) return "Google Analytics 4: not connected.";
@@ -179,9 +182,8 @@ async function buildGa4Context(shop: string): Promise<string> {
     if (!propertyId) return "Google Analytics 4: connected but no property selected.";
 
     const token = await getGoogleAccessToken(refreshToken);
-    const now = new Date();
-    const endDate = now.toISOString().split("T")[0];
-    const startDate = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const endDate = todayInTz(tz);
+    const startDate = daysAgoInTz(tz, 27);
 
     const runReport = (dimensions: { name: string }[], metrics: { name: string }[], limit = 10) =>
       fetch(`https://analyticsdata.googleapis.com/v1beta/${propertyId}:runReport`, {
@@ -211,7 +213,7 @@ async function buildGa4Context(shop: string): Promise<string> {
       .join("\n");
 
     return `
-Google Analytics 4 (last 28 days):
+Google Analytics 4 (last 28 days, ${formatDateSpan(startDate, endDate)}):
 Sessions: ${parseInt(sessions).toLocaleString()} | Users: ${parseInt(users).toLocaleString()}
 New users: ${parseInt(newUsers).toLocaleString()} | Bounce rate: ${(parseFloat(bounceRate) * 100).toFixed(1)}%
 Avg session: ${mins}m ${secs}s
@@ -225,7 +227,7 @@ ${topSources || "  No source data"}
 
 // ── Google Ads ────────────────────────────────────────────────────────────────
 
-async function buildGadsContext(shop: string): Promise<string> {
+async function buildGadsContext(shop: string, tz: string): Promise<string> {
   try {
     const refreshToken = await shopKv.getGadsToken(shop);
     if (!refreshToken) return "Google Ads: not connected.";
@@ -234,9 +236,8 @@ async function buildGadsContext(shop: string): Promise<string> {
     if (!GADS_DEV_TOKEN) return "Google Ads: not configured.";
 
     const accessToken = await getGoogleAccessToken(refreshToken);
-    const now = new Date();
-    const endDate   = now.toISOString().split("T")[0];
-    const startDate = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const endDate   = todayInTz(tz);
+    const startDate = daysAgoInTz(tz, 27);
 
     const res = await fetch(
       `${GADS_API}/customers/${customerId}/googleAds:search`,
@@ -249,7 +250,7 @@ async function buildGadsContext(shop: string): Promise<string> {
         },
         body: JSON.stringify({
           query: `
-            SELECT metrics.impressions, metrics.clicks, metrics.cost_micros,
+            SELECT customer.currency_code, metrics.impressions, metrics.clicks, metrics.cost_micros,
                    metrics.conversions, metrics.conversions_value, metrics.ctr
             FROM customer
             WHERE segments.date BETWEEN '${startDate}' AND '${endDate}'
@@ -258,7 +259,7 @@ async function buildGadsContext(shop: string): Promise<string> {
       }
     );
     const data = await res.json() as {
-      results?: { metrics?: { impressions?: string; clicks?: string; costMicros?: string; conversions?: string; conversionsValue?: string; ctr?: string } }[];
+      results?: { customer?: { currencyCode?: string }; metrics?: { impressions?: string; clicks?: string; costMicros?: string; conversions?: string; conversionsValue?: string; ctr?: string } }[];
       error?: GadsApiError;
     };
 
@@ -281,12 +282,14 @@ async function buildGadsContext(shop: string): Promise<string> {
 
     const roas = totalCost > 0 ? (totalConvValue / totalCost).toFixed(2) : "0.00";
     const ctr  = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : "0.00";
+    const code = data.results?.find(r => r.customer?.currencyCode)?.customer?.currencyCode ?? "INR";
+    const cur  = code === "INR" ? "₹" : code === "USD" ? "$" : code + " ";
 
     return `
-Google Ads (last 28 days · Account ${customerId}):
-Spend: $${totalCost.toFixed(2)} | Impressions: ${Math.round(totalImpressions).toLocaleString()}
+Google Ads (last 28 days, ${formatDateSpan(startDate, endDate)} · Account ${customerId}):
+Spend: ${cur}${totalCost.toFixed(2)} | Impressions: ${Math.round(totalImpressions).toLocaleString()}
 Clicks: ${Math.round(totalClicks).toLocaleString()} | CTR: ${ctr}%
-Conversions: ${totalConversions.toFixed(1)} | Conv. Value: $${totalConvValue.toFixed(2)} | ROAS: ${roas}x
+Conversions: ${totalConversions.toFixed(1)} | Conv. Value: ${cur}${totalConvValue.toFixed(2)} | ROAS: ${roas}x
 `.trim();
   } catch {
     return "Google Ads: could not load data.";
@@ -299,13 +302,13 @@ export async function POST(req: NextRequest) {
   try {
     const { messages } = await req.json();
 
-    const { context: storeContext, shop } = await buildStoreContext(req);
+    const { context: storeContext, shop, tz } = await buildStoreContext(req);
 
     const [metaContext, gscContext, ga4Context, gadsContext] = await Promise.all([
-      shop ? buildMetaContext(req, shop) : Promise.resolve("Meta Ads: not connected."),
-      shop ? buildGscContext(shop)       : Promise.resolve("Google Search Console: not connected."),
-      shop ? buildGa4Context(shop)       : Promise.resolve("Google Analytics 4: not connected."),
-      shop ? buildGadsContext(shop)      : Promise.resolve("Google Ads: not connected."),
+      shop ? buildMetaContext(req, shop, tz) : Promise.resolve("Meta Ads: not connected."),
+      shop ? buildGscContext(shop)           : Promise.resolve("Google Search Console: not connected."),
+      shop ? buildGa4Context(shop, tz)       : Promise.resolve("Google Analytics 4: not connected."),
+      shop ? buildGadsContext(shop, tz)      : Promise.resolve("Google Ads: not connected."),
     ]);
 
     const response = await client.messages.create({
@@ -331,7 +334,8 @@ ${gadsContext}
 
 Rules:
 - Give specific, numbers-based answers using ONLY the data above
-- Use ₹ for Indian currency
+- Each section above covers its own dates. When you quote a number, say which dates it covers, and never add numbers from sections with different dates without saying so
+- Use the currency shown in each section (₹ for Indian accounts)
 - Format action items as numbered lists
 - Keep responses under 300 words unless deep analysis is requested
 - Never say a platform is "not connected" if its data section above has real numbers`,

@@ -8,6 +8,7 @@ import {
 import { AlertTriangle, ArrowRight, Megaphone } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Donut } from "@/components/ui/charts";
+import { formatDateSpan } from "@/lib/date-range-context";
 import {
   BenchmarkNote, DataTable, DiagPanel, EmptyNote, GadsGate, GadsHeader, Judged, KpiTile, Note,
   PartialNotice, Pills, VerdictBadge, pctChange, useGadsSection, type Column,
@@ -490,7 +491,7 @@ export default function GadsPage() {
       <GadsHeader
         icon={Megaphone}
         title="Google Ads Overview"
-        subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}, compared with the previous period of the same length` : "All KPIs by objective, compared with industry benchmarks"}
+        subtitle={state.data ? `${state.data.account} · ${formatDateSpan(state.data.period.from, state.data.period.to)}, compared with the previous period of the same length` : "All KPIs by objective, compared with industry benchmarks"}
       />
       <GadsGate state={state}>{d => <Overview d={d} />}</GadsGate>
     </div>

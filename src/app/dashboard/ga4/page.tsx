@@ -7,7 +7,7 @@ import { BarChart3, ArrowRight } from "lucide-react";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
 import Link from "next/link";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan } from "@/lib/date-range-context";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { cn, formatINR } from "@/lib/utils";
 
@@ -223,7 +223,7 @@ export default function GA4Page() {
     await exportToPDF(
       `skylitee-ga4-${range.from}`,
       "Google Analytics 4 Report",
-      `${data.property} · ${data.period.startDate} → ${data.period.endDate}`,
+      `${data.property} · ${formatDateSpan(data.period.startDate, data.period.endDate)}`,
       buildSections()
     );
   }
@@ -233,7 +233,7 @@ export default function GA4Page() {
       <div className="flex items-start justify-between mb-3">
         <div>
           <h2 className="text-lg font-bold dark:text-[#F4F4F5]">Google Analytics 4</h2>
-          <p className="text-[15px] text-[#A1A1AA] mt-0.5">{data.property} · {data.period.startDate} → {data.period.endDate}</p>
+          <p className="text-[15px] text-[#A1A1AA] mt-0.5">{data.property} · {formatDateSpan(data.period.startDate, data.period.endDate)}</p>
         </div>
         <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} />
       </div>
@@ -291,7 +291,7 @@ export default function GA4Page() {
         <div className="space-y-3">
           {dailyFormatted.length > 0 && (
             <Card>
-              <CardHeader title="Daily sessions & users" right={`${data.period.startDate} → ${data.period.endDate}`} />
+              <CardHeader title="Daily sessions & users" right={formatDateSpan(data.period.startDate, data.period.endDate)} />
               <div className="h-48">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={dailyFormatted} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>

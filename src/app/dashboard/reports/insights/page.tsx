@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
+import { fetchGoogleAds } from "@/lib/gads-client";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
@@ -36,7 +38,7 @@ const severityBadge: Record<string, string> = {
 export default function InsightsReportPage() {
   const { range } = useDateRange();
   const [report, setReport] = useState<AIReport | null>(null);
-  const [platforms, setPlatforms] = useState<{ shopify: boolean; meta: boolean; gsc: boolean; ga4: boolean } | null>(null);
+  const [platforms, setPlatforms] = useState<{ shopify: boolean; meta: boolean; gads: boolean; gsc: boolean; ga4: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
@@ -46,19 +48,21 @@ export default function InsightsReportPage() {
     setError(null);
     setReport(null);
 
-    const [sR, mR, gR, gaR] = await Promise.allSettled([
+    const [sR, mR, gR, gaR, adsR] = await Promise.allSettled([
       fetch(`/api/shopify/sales?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/meta?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/gsc?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/ga4?from=${range.from}&to=${range.to}`).then(r => r.json()),
+      fetchGoogleAds(range.from, range.to),
     ]);
 
     const shopify = sR.status === "fulfilled" && !sR.value?.error ? sR.value : null;
     const meta    = mR.status === "fulfilled" && !mR.value?.error ? mR.value : null;
     const gsc     = gR.status === "fulfilled" && !gR.value?.error ? gR.value : null;
     const ga4     = gaR.status === "fulfilled" && !gaR.value?.error ? gaR.value : null;
+    const gads    = adsR.status === "fulfilled" ? adsR.value.data : null;
 
-    if (!shopify && !meta && !gsc && !ga4) {
+    if (!shopify && !meta && !gads && !gsc && !ga4) {
       setError("No platform data available. Connect at least one platform to generate AI insights.");
       setLoading(false);
       return;
@@ -68,7 +72,7 @@ export default function InsightsReportPage() {
       const res = await fetch("/api/ai/report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shopify, meta, gsc, ga4, period: { from: range.from, to: range.to } }),
+        body: JSON.stringify({ shopify, meta, gads, gsc, ga4, period: { from: range.from, to: range.to } }),
       });
       const data = await res.json();
       if (data.error) { setError(data.error); return; }
@@ -116,13 +120,13 @@ export default function InsightsReportPage() {
             <h1 className="text-xl font-bold text-[#18181B] dark:text-[#F4F4F5]">AI Insights</h1>
             <span className="px-2 py-0.5 bg-[#FFF7ED] text-[#EA580C] border border-[#FED7AA] rounded-full text-[12px] font-bold">Powered by Claude</span>
           </div>
-          <p className="text-[14px] text-[#A1A1AA] ml-9">{range.label}{generatedAt ? ` · Generated ${generatedAt}` : ""}</p>
+          <p className="text-[14px] text-[#A1A1AA] ml-9"><RangeText />{generatedAt ? ` · Generated ${generatedAt}` : ""}</p>
         </div>
         <div className="flex items-center gap-2">
           {report && (
             <ExportButton
               onExportCSV={() => exportToCSV(`skylitee-ai-insights-${range.from}`, buildSections())}
-              onExportPDF={() => exportToPDF(`skylitee-ai-insights-${range.from}`, "AI Insights Report", range.label, buildSections())}
+              onExportPDF={() => exportToPDF(`skylitee-ai-insights-${range.from}`, "AI Insights Report", rangeText(range), buildSections())}
             />
           )}
           <button
@@ -148,7 +152,7 @@ export default function InsightsReportPage() {
             <Sparkles size={36} className="text-[#F97316] mx-auto mb-4" />
             <h2 className="text-[18px] font-bold text-[#18181B] dark:text-[#F4F4F5] mb-2">Get AI-powered business insights</h2>
             <p className="text-[15px] text-[#71717A] max-w-md mx-auto mb-6 leading-relaxed">
-              Claude analyses your Shopify, Meta Ads, Google Search Console, and GA4 data together to identify what&apos;s working, what needs fixing, and your highest-impact next steps.
+              Claude analyses your Shopify, Meta Ads, Google Ads, Google Search Console, and GA4 data together to identify what&apos;s working, what needs fixing, and your highest-impact next steps.
             </p>
             <button
               onClick={generateReport}

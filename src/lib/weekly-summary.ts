@@ -2,9 +2,10 @@ import crypto from "crypto";
 import { Resend } from "resend";
 import { shopKv } from "@/lib/kv";
 import { getValidToken, fetchOrdersInRange, getShopTimezone, orderRevenue, isCodGateway, shopifyFetch } from "@/lib/shopify";
-import { daysAgoInTz, todayInTz, zonedDayStartISO } from "@/lib/timezone";
+import { daysAgoInTz, formatDateSpan, todayInTz, zonedDayStartISO } from "@/lib/timezone";
 import { resolveMetaAccount, leadCount } from "@/lib/meta";
-import { buildPlainReport, reportText, type PlainReport, type PlainCampaign } from "@/lib/plain-insights";
+import { getGoogleAccessToken, GADS_API } from "@/lib/google";
+import { buildPlainReport, reportText, type PlainReport, type PlainCampaign, type PlainGoogleCampaign } from "@/lib/plain-insights";
 import { embeddedModeOn, shopAdminAppUrl } from "@/lib/embedded";
 import { formatINR } from "@/lib/utils";
 import { isEmbeddedEmail } from "@/lib/auth";
@@ -29,7 +30,53 @@ const actVal = (arr: ActionEntry[] | undefined, t: string) => parseFloat(arr?.fi
 const purchases = (a?: ActionEntry[]) => Math.round(Math.max(actVal(a, "offsite_conversion.fb_pixel_purchase"), actVal(a, "purchase")));
 const purchaseValue = (a?: ActionEntry[]) => Math.max(actVal(a, "offsite_conversion.fb_pixel_purchase"), actVal(a, "purchase"));
 
-export interface WeeklyResult { shop: string; report: PlainReport; email: string | null; storeName: string; dashboardUrl: string }
+export interface WeeklyResult { shop: string; report: PlainReport; email: string | null; storeName: string; dashboardUrl: string; period: { from: string; to: string } }
+
+interface GadsRow {
+  campaign?: { name?: string };
+  customer?: { currencyCode?: string };
+  metrics?: { clicks?: string; impressions?: string; costMicros?: string; conversions?: string; conversionsValue?: string };
+}
+
+// Google Ads for the same 7 days (best effort, like Meta). The email is in ₹, so an account
+// billed in another currency stays out rather than being added to rupee totals.
+async function fetchWeeklyGoogle(shop: string, from: string, to: string) {
+  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+  const [refreshToken, customerId] = await Promise.all([shopKv.getGadsToken(shop), shopKv.getGadsCustomerId(shop)]);
+  if (!devToken || !refreshToken || !customerId) return null;
+
+  const accessToken = await getGoogleAccessToken(refreshToken);
+  const search = (query: string) => fetch(`${GADS_API}/customers/${customerId}/googleAds:search`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "developer-token": devToken, "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  }).then(r => r.json() as Promise<{ results?: GadsRow[]; error?: unknown }>);
+
+  const dates = `segments.date BETWEEN '${from}' AND '${to}'`;
+  const fields = "metrics.clicks, metrics.impressions, metrics.cost_micros, metrics.conversions, metrics.conversions_value";
+  const [totals, byCampaign] = await Promise.all([
+    search(`SELECT customer.currency_code, ${fields} FROM customer WHERE ${dates}`),
+    search(`SELECT campaign.name, ${fields} FROM campaign WHERE ${dates} AND campaign.status = 'ENABLED' AND metrics.cost_micros > 0 ORDER BY metrics.cost_micros DESC LIMIT 20`),
+  ]);
+  if (totals.error) return null;
+
+  const n = (v?: string) => parseFloat(v ?? "0");
+  const rows = totals.results ?? [];
+  const sum = (pick: (m: NonNullable<GadsRow["metrics"]>) => string | undefined) => rows.reduce((t, r) => t + n(pick(r.metrics ?? {})), 0);
+  const spend = sum(m => m.costMicros) / 1_000_000;
+  if (spend <= 0 || rows.some(r => r.customer?.currencyCode !== "INR")) return null;
+
+  const campaigns: PlainGoogleCampaign[] = byCampaign.error ? [] : (byCampaign.results ?? []).map(r => ({
+    name: r.campaign?.name ?? "Campaign",
+    spend: n(r.metrics?.costMicros) / 1_000_000,
+    conversions: n(r.metrics?.conversions),
+    conversionValue: n(r.metrics?.conversionsValue),
+  }));
+  return {
+    kpis: { spend, conversionValue: sum(m => m.conversionsValue), conversions: sum(m => m.conversions), clicks: sum(m => m.clicks), impressions: sum(m => m.impressions) },
+    campaigns,
+  };
+}
 
 export async function buildWeekly(shop: string): Promise<WeeklyResult | null> {
   const token = await getValidToken(shop);
@@ -91,6 +138,8 @@ export async function buildWeekly(shop: string): Promise<WeeklyResult | null> {
     } catch { /* skip Meta */ }
   }
 
+  const google = await fetchWeeklyGoogle(shop, from, to).catch(() => null);
+
   const report = buildPlainReport({
     periodLabel: "the last 7 days",
     storeHandle: shop.replace(".myshopify.com", ""),
@@ -101,14 +150,15 @@ export async function buildWeekly(shop: string): Promise<WeeklyResult | null> {
     salesChangePct: prevSales > 0 ? Math.round(((sales - prevSales) / prevSales) * 100) : undefined,
     repeatRate: customers.size >= 5 ? Math.round((returning / customers.size) * 100) : null,
     meta, campaigns,
-    gads: null,
+    gads: google?.kpis ?? null,
+    gadsCampaigns: google?.campaigns,
     gsc: null,
-    connected: { meta: !!meta, google: true }, // Google isn't fetched here - don't nag about connecting it
+    connected: { meta: !!meta, google: true }, // Search Console isn't fetched here - don't nag about connecting it
     breakEvenRoas: null,
     costsSet: true,                             // cost model lives in the browser; skip the setup nudge
     rto: null,
   });
-  // Health tiles without data this email can't judge (Google) are dropped.
+  // The Google tile is about free search, which this email doesn't fetch, so it's dropped.
   report.health = report.health.filter(h => h.area !== "Google");
 
   // Embedded installs have a pseudo-user owner with no inbox → use the store's contact email.
@@ -117,19 +167,21 @@ export async function buildWeekly(shop: string): Promise<WeeklyResult | null> {
     shop, report, email,
     storeName: shopInfo.shop?.name ?? shop.replace(".myshopify.com", ""),
     dashboardUrl: embeddedModeOn() ? shopAdminAppUrl(shop) : `${APP_URL}/dashboard`,
+    period: { from, to },
   };
 }
 
-export const weeklyText = (r: PlainReport, storeName: string) => reportText(r, `${storeName} - this week`);
+const weeklySpan = (w: WeeklyResult) => formatDateSpan(w.period.from, w.period.to);
+export const weeklyText = (w: WeeklyResult) => reportText(w.report, `${w.storeName} - ${weeklySpan(w)}`);
 
 export async function sendWeekly(w: WeeklyResult, to: string): Promise<void> {
   const resend = new Resend(process.env.RESEND_API_KEY);
   const { error } = await resend.emails.send({
     from: process.env.RESEND_FROM_EMAIL ?? "noreply@skylitee.io",
     to,
-    subject: `${w.storeName}: your week in plain English`,
+    subject: `${w.storeName}: your week in plain English (${weeklySpan(w)})`,
     html: weeklyHtml(w),
-    text: `${weeklyText(w.report, w.storeName).replace(/\*/g, "")}\n\nOpen your dashboard: ${w.dashboardUrl}`,
+    text: `${weeklyText(w).replace(/\*/g, "")}\n\nOpen your dashboard: ${w.dashboardUrl}`,
   });
   if (error) throw new Error(error.message);
 }
@@ -139,7 +191,7 @@ const TILE = { good: ["#F0FDF4", "#16A34A", "Good"], warn: ["#FFFBEB", "#CA8A04"
 
 export function weeklyHtml(w: WeeklyResult): string {
   const unsub = `${APP_URL}/api/weekly-summary/unsubscribe?shop=${encodeURIComponent(w.shop)}&sig=${weeklySig(w.shop)}`;
-  const wa = `https://wa.me/?text=${encodeURIComponent(weeklyText(w.report, w.storeName))}`;
+  const wa = `https://wa.me/?text=${encodeURIComponent(weeklyText(w))}`;
   const tiles = w.report.health.map(h => {
     const [bg, fg, word] = TILE[h.status];
     return `<tr><td style="padding:10px 12px;background:${bg};border-radius:10px">
@@ -160,7 +212,8 @@ export function weeklyHtml(w: WeeklyResult): string {
   <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
   <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;padding:20px">
     <tr><td style="font-size:13px;color:#A1A1AA">Skylitee · weekly summary</td></tr>
-    <tr><td style="font-size:20px;font-weight:800;color:#18181B;padding:4px 0 12px">${esc(w.storeName)} - your week in plain English</td></tr>
+    <tr><td style="font-size:20px;font-weight:800;color:#18181B;padding:4px 0 2px">${esc(w.storeName)} - your week in plain English</td></tr>
+    <tr><td style="font-size:13px;color:#71717A;padding-bottom:12px">${esc(weeklySpan(w))}, compared with the 7 days before</td></tr>
     <tr><td style="font-size:15px;color:#18181B;line-height:1.6;padding:12px;background:#FFF7ED;border-radius:10px">${esc(w.report.summary)}</td></tr>
     <tr><td style="height:16px"></td></tr>
     <tr><td><table width="100%" cellpadding="0" cellspacing="0">${tiles}</table></td></tr>

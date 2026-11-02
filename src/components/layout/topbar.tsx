@@ -2,9 +2,18 @@
 import { usePathname, useRouter } from "next/navigation";
 import { RefreshCw, Bell, ChevronDown, Calendar, Sun, Moon, Menu, LogOut, User, Store } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
-import { useDateRange, DatePreset } from "@/lib/date-range-context";
+import { useDateRange, DatePreset, formatRangeDates } from "@/lib/date-range-context";
+import { useMounted } from "@/components/ui/period";
 import { useTheme } from "@/lib/theme-context";
 import { isEmbedded } from "@/lib/embedded-client";
+
+// These pages use their own fixed window and show it themselves, so the date
+// picker would change nothing on them. Hide it rather than imply it applies.
+const OWN_PERIOD_PAGES = [
+  "/dashboard/anomaly", "/dashboard/chat", "/dashboard/cohort", "/dashboard/competitors",
+  "/dashboard/connections", "/dashboard/goals", "/dashboard/insights", "/dashboard/pricing",
+  "/dashboard/profile", "/dashboard/reports/builder", "/dashboard/weekly",
+];
 
 const titles: Record<string, string> = {
   "/dashboard": "Command Center",
@@ -12,6 +21,16 @@ const titles: Record<string, string> = {
   "/dashboard/insights": "AI Insights Engine",
   "/dashboard/chat": "AI Assistant",
   "/dashboard/sales": "Sales Report",
+  "/dashboard/sales-analysis": "Sales Analysis",
+  "/dashboard/competitors": "Competitors",
+  "/dashboard/pricing": "Plans",
+  "/dashboard/reports/builder": "Custom Report",
+  "/dashboard/reports/seo": "SEO Report",
+  "/dashboard/reports/performance": "Performance Marketing",
+  "/dashboard/reports/financial": "Financial P&L Report",
+  "/dashboard/reports/meta": "Meta Ads Report",
+  "/dashboard/reports/traffic": "Traffic Report",
+  "/dashboard/reports/insights": "AI Insights Report",
   "/dashboard/goals": "Monthly Goals",
   "/dashboard/products": "Product Analytics",
   "/dashboard/customers": "Customer Intelligence",
@@ -80,6 +99,8 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
   const [alerts, setAlerts] = useState<Array<{ sev: "danger" | "warning"; title: string; body: string }>>([]);
   const [alertsSeen, setAlertsSeen] = useState(false);
   const { range, setPreset, setCustomRange, compareWith, setCompareWith } = useDateRange();
+  const mounted = useMounted();
+  const usesPicker = !OWN_PERIOD_PAGES.includes(pathname);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -174,7 +195,13 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
 
   const handlePreset = (id: DatePreset) => {
     setPreset(id);
-    if (id !== "custom") setShowDatePicker(false);
+    if (id === "custom") {
+      // Start from the dates on screen, so one end can be changed without retyping both.
+      setCustomFrom(f => f || range.from);
+      setCustomTo(t => t || range.to);
+    } else {
+      setShowDatePicker(false);
+    }
   };
 
   const applyCustom = () => {
@@ -207,14 +234,21 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
         <h1 className="text-[15px] font-bold text-[#18181B] dark:text-[#F4F4F5] flex-1 uppercase tracking-wider truncate">{title}</h1>
 
         {/* Date picker */}
-        <div className="relative" ref={datePickerRef}>
+        {usesPicker && <div className="relative shrink-0" ref={datePickerRef}>
           <button
             onClick={() => setShowDatePicker(v => !v)}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-black/[0.08] dark:border-white/[0.08] rounded-lg text-[15px] text-[#71717A] dark:text-[#A1A1AA] bg-[#F5F5F4] dark:bg-[#1C1C1C] hover:bg-[#EBEBEB] dark:hover:bg-[#262626] transition-colors"
+            title={mounted ? `${range.label}: ${formatRangeDates(range)}` : range.label}
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 border border-black/[0.08] dark:border-white/[0.08] rounded-lg text-[14px] sm:text-[15px] whitespace-nowrap text-[#71717A] dark:text-[#A1A1AA] bg-[#F5F5F4] dark:bg-[#1C1C1C] hover:bg-[#EBEBEB] dark:hover:bg-[#262626] transition-colors"
           >
-            <Calendar size={11} />
-            {range.label}
-            <ChevronDown size={10} />
+            <Calendar size={11} className="shrink-0" />
+            {/* The dates always show; the preset word joins them when there's room. */}
+            {mounted ? (
+              <>
+                {range.preset !== "custom" && <span className="hidden md:inline">{range.label} ·</span>}
+                <span className="font-semibold text-[#18181B] dark:text-[#F4F4F5]">{formatRangeDates(range)}</span>
+              </>
+            ) : range.label}
+            <ChevronDown size={10} className="shrink-0" />
           </button>
 
           {showDatePicker && (
@@ -259,18 +293,18 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
               )}
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Compare - hidden on mobile */}
-        <select
+        {usesPicker && <select
           value={compareWith}
           onChange={e => setCompareWith(e.target.value)}
-          className="hidden sm:block text-[15px] px-2.5 py-1.5 border border-black/[0.08] dark:border-white/[0.08] rounded-lg bg-[#F5F5F4] dark:bg-[#1C1C1C] text-[#18181B] dark:text-[#F4F4F5] focus:outline-none focus:border-[#F97316]"
+          className="hidden lg:block text-[15px] px-2.5 py-1.5 border border-black/[0.08] dark:border-white/[0.08] rounded-lg bg-[#F5F5F4] dark:bg-[#1C1C1C] text-[#18181B] dark:text-[#F4F4F5] focus:outline-none focus:border-[#F97316]"
         >
           {compareOptions.map(o => (
             <option key={o.id} value={o.id}>{o.label}</option>
           ))}
-        </select>
+        </select>}
 
         {/* Platform pills - hidden on mobile */}
         <div className="hidden lg:flex items-center gap-1.5">

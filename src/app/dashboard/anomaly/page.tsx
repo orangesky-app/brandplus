@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Card, CardHeader } from "@/components/ui/card";
+import { PeriodNote } from "@/components/ui/period";
+import { formatDateSpan } from "@/lib/date-range-context";
 import { AlertCircle, AlertTriangle, CheckCircle2, RefreshCw, TrendingUp } from "lucide-react";
 import Link from "next/link";
 
@@ -10,6 +12,7 @@ interface AnomalyData {
   warnings: Alert[];
   positive: Alert[];
   summary: { totalOrders: number; codPct: number; repeatRate: number; projectedMonthly: number; days: number; grossSales: number };
+  period: { from: string; to: string };
 }
 
 export default function AnomalyPage() {
@@ -35,6 +38,7 @@ export default function AnomalyPage() {
         <div>
           <h2 className="text-lg font-bold text-[#18181B] dark:text-[#F4F4F5] flex items-center gap-2"><AlertCircle size={18} className="text-[#F97316]" /> Anomaly Feed</h2>
           <p className="text-[15px] text-[#A1A1AA] mt-0.5">Real-time signals from your Shopify store</p>
+          {data?.period && <PeriodNote from={data.period.from} to={data.period.to} label="This month so far" />}
         </div>
         <div className="flex items-center gap-2.5">
           {/* Stat pills */}
@@ -65,7 +69,7 @@ export default function AnomalyPage() {
           <Link href="/dashboard/connections" className="text-[15px] text-[#F97316] font-semibold underline">Go to Connections →</Link>
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Left: Critical + Warnings */}
           <div>
             {data.critical.length > 0 && (
@@ -146,12 +150,12 @@ export default function AnomalyPage() {
 
             {/* Store summary card */}
             <Card className="mt-2">
-              <CardHeader title="Store summary" right="This month" />
+              <CardHeader title="Store summary" right={data.period ? formatDateSpan(data.period.from, data.period.to) : "This month"} />
               <div className="space-y-3">
                 {[
                   { label: "Total orders", value: data.summary.totalOrders.toString(), warn: false },
                   { label: "COD ratio", value: `${data.summary.codPct}%`, warn: data.summary.codPct > 50 },
-                  { label: "Repeat rate", value: `${data.summary.repeatRate}%`, warn: data.summary.repeatRate < 20 },
+                  { label: "Repeat rate (all customers)", value: `${data.summary.repeatRate}%`, warn: data.summary.repeatRate < 20 },
                   { label: "Projected monthly", value: `₹${data.summary.projectedMonthly.toLocaleString("en-IN")}`, warn: false },
                 ].map(row => (
                   <div key={row.label} className="flex items-center justify-between">

@@ -7,7 +7,8 @@ import { BarRow } from "@/components/ui/bar-row";
 import { formatINR } from "@/lib/utils";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
 import { RefreshCw, Users } from "lucide-react";
 import { Donut } from "@/components/ui/charts";
 
@@ -84,7 +85,7 @@ export default function CustomersPage() {
     if (!periodData) return [];
     const k = periodData.kpis;
     return [
-      { title: `Customer KPIs (${range.label})`, headers: ["Metric", "Value"], rows: [
+      { title: `Customer KPIs (${rangeText(range)})`, headers: ["Metric", "Value"], rows: [
         ["Active Buyers", k.activeBuyers],
         ["New Buyers", k.newBuyers],
         ["Returning Buyers", k.returningBuyers],
@@ -101,7 +102,7 @@ export default function CustomersPage() {
   async function handleExportPDF() {
     await exportToPDF(
       "skylitee-customers", "Customer Intelligence",
-      mode === "all" ? "Shopify live data · All-time" : `Shopify live data · ${range.label}`,
+      mode === "all" ? "Shopify live data · All-time" : `Shopify live data · ${rangeText(range)}`,
       buildSections()
     );
   }
@@ -124,13 +125,13 @@ export default function CustomersPage() {
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold flex items-center gap-2"><Users size={18} className="text-[#F97316]" /> Customer Intelligence</h2>
             <span className="text-[13px] font-semibold text-[#0d6b4f] bg-[#e0f5ee] px-2 py-0.5 rounded-full">
-              {mode === "all" ? "All-time" : range.label}
+              {mode === "all" ? "All-time" : <RangeText />}
             </span>
           </div>
           <p className="text-[17px] text-[#686864] mt-0.5">
             {mode === "all"
               ? <>Lifetime customer data from Shopify · cached up to 10 min <span className="text-[#a3a39e]">(not affected by the date range - hit Refresh for live)</span></>
-              : <>Customers who ordered during <span className="font-medium text-[#181816]">{range.label}</span> · change the date range up top</>}
+              : <>Customers who ordered during <span className="font-medium text-[#181816]"><RangeText /></span> · change the date range up top</>}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -158,7 +159,7 @@ export default function CustomersPage() {
               mode === m ? "bg-[#181816] text-white" : "text-[#686864] hover:text-[#181816]"
             }`}
           >
-            {m === "all" ? "All-time" : `By date range (${range.label})`}
+            {m === "all" ? "All-time" : "By date range"}
           </button>
         ))}
       </div>
@@ -168,7 +169,7 @@ export default function CustomersPage() {
       ) : !data ? (
         <div className="text-[17px] text-[#d94040] py-8 text-center">Could not load customer data. Check Shopify connection.</div>
       ) : mode === "period" && periodData && periodData.kpis.activeBuyers === 0 ? (
-        <div className="text-[17px] text-[#686864] py-8 text-center">No customers ordered during {range.label}.</div>
+        <div className="text-[17px] text-[#686864] py-8 text-center">No customers ordered during <RangeText />.</div>
       ) : mode === "all" && allData ? (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
@@ -188,7 +189,7 @@ export default function CustomersPage() {
       ) : mode === "period" && periodData ? (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
-            <KPICard label="Active Buyers" value={periodData.kpis.activeBuyers.toLocaleString()} sub={`Ordered in ${range.label}`} />
+            <KPICard label="Active Buyers" value={periodData.kpis.activeBuyers.toLocaleString()} sub={`Ordered in ${formatDateSpan(range.from, range.to)}`} />
             <KPICard label="New Buyers" value={periodData.kpis.newBuyers.toLocaleString()} sub="First-time customers" />
             <KPICard
               label="Returning Buyers"
@@ -207,7 +208,7 @@ export default function CustomersPage() {
 
   function renderSegments() {
     const total = mode === "all" ? (allData?.kpis.totalCustomers ?? 0) : (periodData?.kpis.activeBuyers ?? 0);
-    const totalLabel = mode === "all" ? `${total.toLocaleString()} total customers` : `${total.toLocaleString()} buyers in ${range.label}`;
+    const totalLabel = mode === "all" ? `${total.toLocaleString()} total customers` : `${total.toLocaleString()} buyers in ${formatDateSpan(range.from, range.to)}`;
     const donutColors = ["#22C55E", "#F97316", "#3B82F6"];
     const donutSegments = segments.map((s, i) => ({ label: s.name, value: s.count, color: donutColors[i % donutColors.length] }));
     return (
@@ -254,7 +255,7 @@ export default function CustomersPage() {
           {m === "period" && periodData && (
             <>
               {periodData.kpis.newBuyers > 0 && (
-                <InsightCard type="purple" title={`${periodData.kpis.newBuyers} new buyers in ${range.label}`} body="Trigger a welcome flow now while they're warm: thank-you note, brand story, and a small nudge toward a 2nd order." />
+                <InsightCard type="purple" title={`${periodData.kpis.newBuyers} new buyers in ${formatDateSpan(range.from, range.to)}`} body="Trigger a welcome flow now while they're warm: thank-you note, brand story, and a small nudge toward a 2nd order." />
               )}
               {periodData.kpis.returningBuyers > 0 && (
                 <InsightCard title={`${periodData.kpis.returningBuyers} returning buyers - keep them loyal`} body="Returning buyers drove repeat revenue this period. Reward with early access or loyalty points to protect retention." />

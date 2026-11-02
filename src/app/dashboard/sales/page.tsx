@@ -4,7 +4,8 @@ import { KPICard } from "@/components/ui/kpi-card";
 import { Card, CardHeader } from "@/components/ui/card";
 import { formatINR } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeText } from "@/lib/date-range-context";
+import { fetchGoogleAds, gadsIssueText, type GadsIssue, type GadsKpis } from "@/lib/gads-client";
 import { ShoppingCart, Share2, Megaphone, TrendingUp, Package, MapPin } from "lucide-react";
 import Link from "next/link";
 import { ExportButton } from "@/components/ui/export-button";
@@ -47,6 +48,8 @@ export default function SalesPage() {
   const [metaConnected, setMetaConnected] = useState(false);
   const [metaSalesCac, setMetaSalesCac] = useState<number | null>(null);
   const [ga4Connected, setGa4Connected] = useState(false);
+  const [gads, setGads] = useState<GadsKpis | null>(null);
+  const [gadsIssue, setGadsIssue] = useState<GadsIssue | null>(null);
   const [loading, setLoading] = useState(true);
   const [adsLoading, setAdsLoading] = useState(true);
   const [months, setMonths] = useState(6);
@@ -54,19 +57,26 @@ export default function SalesPage() {
   const [monthlyLoading, setMonthlyLoading] = useState(false);
 
   useEffect(() => {
+    let stale = false;
     setLoading(true);
     setAdsLoading(true);
-    // Shopify drives the page - render as soon as it lands; Meta/GA4 fill in when they arrive
-    // instead of the slowest of the three holding the whole page on "Loading…".
+    // A date change must not leave the last period's numbers next to the new dates.
+    setSales(null); setMeta(null); setGa4(null); setGa4Ecom(null); setMetaSalesCac(null);
+    setMetaConnected(false); setGa4Connected(false); setGads(null); setGadsIssue(null);
+    // Shopify drives the page - render as soon as it lands; Meta/Google/GA4 fill in when they arrive
+    // instead of the slowest of them holding the whole page on "Loading…".
     fetch(`/api/shopify/sales?from=${range.from}&to=${range.to}`)
       .then(r => r.json())
-      .then(s => { if (!s?.error) setSales(s); })
+      .then(s => { if (!stale && !s?.error) setSales(s); })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (!stale) setLoading(false); });
     Promise.allSettled([
       fetch(`/api/meta?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/ga4?from=${range.from}&to=${range.to}`).then(r => r.json()),
-    ]).then(([mRes, gRes]) => {
+      fetchGoogleAds(range.from, range.to),
+    ]).then(([mRes, gRes, adsRes]) => {
+      if (stale) return;
+      if (adsRes.status === "fulfilled") { setGads(adsRes.value.data?.kpis ?? null); setGadsIssue(adsRes.value.issue); }
       if (mRes.status === "fulfilled" && !mRes.value?.error) {
         setMeta(mRes.value.kpis ?? null); setMetaConnected(true);
         // CAC scoped to SALES-objective campaigns (not blended account spend) - awareness/
@@ -78,7 +88,8 @@ export default function SalesPage() {
         setMetaSalesCac(sPurch > 0 ? Math.round(sSpend / sPurch) : null);
       }
       if (gRes.status === "fulfilled" && !gRes.value?.error) { setGa4(gRes.value.kpis ?? null); setGa4Ecom(gRes.value.ecommerce ?? null); setGa4Connected(true); }
-    }).finally(() => setAdsLoading(false));
+    }).finally(() => { if (!stale) setAdsLoading(false); });
+    return () => { stale = true; };
   }, [range.from, range.to]);
 
   // Month-wise store performance (independent of the global range).
@@ -95,8 +106,13 @@ export default function SalesPage() {
   const prepaidPct = 100 - codPct;
   const metaOrders = meta?.purchases ?? 0;
   const metaRevenue = meta?.purchaseValue ?? 0;
-  const organicOrders = sales ? Math.max(0, sales.kpis.totalOrders - metaOrders) : 0;
-  const organicRevenue = sales ? Math.max(0, sales.kpis.grossSales - metaRevenue) : 0;
+  const googleConversions = Math.round(gads?.conversions ?? 0);
+  const googleRevenue = gads?.conversionValue ?? 0;
+  const organicOrders = sales ? Math.max(0, sales.kpis.totalOrders - metaOrders - googleConversions) : 0;
+  const organicRevenue = sales ? Math.max(0, sales.kpis.grossSales - metaRevenue - googleRevenue) : 0;
+  // Across every connected ad platform, so the headline ROAS isn't Meta-only.
+  const adSpend = (meta?.spend ?? 0) + (gads?.spend ?? 0);
+  const adRoas = adSpend > 0 ? +((metaRevenue + googleRevenue) / adSpend).toFixed(2) : null;
   const fp = (n: number, d: number) => d ? Math.round((n / d) * 100) : 0;
   // Prefer the sales-objective CAC; fall back to account-level only if no sales campaigns.
   const cacValue = metaSalesCac ?? meta?.cac ?? null;
@@ -129,6 +145,12 @@ export default function SalesPage() {
             ["Meta Revenue", formatINR(meta.purchaseValue)] as [string, string],
             ["CTR", `${meta.ctr}%`] as [string, string],
           ] : []),
+          ...(gads ? [
+            ["Google Ads Spend", formatINR(gads.spend)] as [string, string],
+            ["Google Ads ROAS", `${gads.roas}x`] as [string, string],
+            ["Google Ads Conversions", googleConversions] as [string, number],
+            ["Google Ads Revenue", formatINR(googleRevenue)] as [string, string],
+          ] : []),
         ],
       },
       {
@@ -137,6 +159,7 @@ export default function SalesPage() {
         rows: [
           ["Shopify Total", sales.kpis.totalOrders, formatINR(sales.kpis.grossSales), "-", "-", "-"],
           ["Meta Ads", metaConnected ? metaOrders : "-", metaConnected ? formatINR(metaRevenue) : "-", metaConnected && meta ? formatINR(meta.spend) : "-", metaConnected && meta ? `${meta.roas}x` : "-", metaConnected && meta ? `${meta.ctr}%` : "-"],
+          ["Google Ads", gads ? `${googleConversions} conversions` : "-", gads ? formatINR(googleRevenue) : "-", gads ? formatINR(gads.spend) : "-", gads ? `${gads.roas}x` : "-", gads ? `${gads.ctr}%` : "-"],
           ["Organic / Direct", organicOrders, formatINR(organicRevenue), "-", "-", "-"],
         ],
       },
@@ -198,7 +221,7 @@ export default function SalesPage() {
     await exportToPDF(
       `skylitee-sales-${range.from}`,
       "Sales Report",
-      `${range.label} · ${sales?.period.days ?? 0} days`,
+      `${rangeText(range)} · ${sales?.period.days ?? 0} days`,
       buildSections()
     );
   }
@@ -212,10 +235,10 @@ export default function SalesPage() {
   );
 
   const channels = [
-    { label: "Shopify Total", icon: ShoppingCart, color: "text-[#F97316]", bg: "bg-[#FFF7ED] dark:bg-[#2A1A0E]", orders: sales.kpis.totalOrders, revenue: sales.kpis.grossSales, spend: null as number | null, roas: null as number | null },
-    { label: "Meta Ads", icon: Share2, color: "text-[#1877F2]", bg: "bg-[#EFF6FF] dark:bg-[#0F172A]", orders: metaConnected ? metaOrders : null, revenue: metaConnected ? metaRevenue : null, spend: metaConnected ? (meta?.spend ?? null) : null, roas: metaConnected ? (meta?.roas ?? null) : null },
-    { label: "Google Ads", icon: Megaphone, color: "text-[#4285F4]", bg: "bg-[#EFF6FF] dark:bg-[#0F172A]", orders: null, revenue: null, spend: null, roas: null },
-    { label: "Organic/Direct", icon: TrendingUp, color: "text-[#22C55E]", bg: "bg-[#F0FDF4] dark:bg-[#052E16]", orders: organicOrders, revenue: organicRevenue, spend: null, roas: null },
+    { label: "Shopify Total", icon: ShoppingCart, color: "text-[#F97316]", bg: "bg-[#FFF7ED] dark:bg-[#2A1A0E]", orders: sales.kpis.totalOrders, unit: "orders", revenue: sales.kpis.grossSales, spend: null as number | null, roas: null as number | null },
+    { label: "Meta Ads", icon: Share2, color: "text-[#1877F2]", bg: "bg-[#EFF6FF] dark:bg-[#0F172A]", orders: metaConnected ? metaOrders : null, unit: "orders", revenue: metaConnected ? metaRevenue : null, spend: metaConnected ? (meta?.spend ?? null) : null, roas: metaConnected ? (meta?.roas ?? null) : null },
+    { label: "Google Ads", icon: Megaphone, color: "text-[#4285F4]", bg: "bg-[#EFF6FF] dark:bg-[#0F172A]", orders: gads ? googleConversions : null, unit: "conversions", revenue: gads ? googleRevenue : null, spend: gads?.spend ?? null, roas: gads && googleRevenue > 0 ? gads.roas : null },
+    { label: "Organic/Direct", icon: TrendingUp, color: "text-[#22C55E]", bg: "bg-[#F0FDF4] dark:bg-[#052E16]", orders: organicOrders, unit: "orders", revenue: organicRevenue, spend: null, roas: null },
   ];
 
   // Pure GA4 website funnel - every step measured on-site by Google Analytics (no Meta mixing).
@@ -234,7 +257,7 @@ export default function SalesPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-[#18181B] dark:text-[#F4F4F5] flex items-center gap-2"><ShoppingCart size={18} className="text-[#F97316]" /> Sales Report</h2>
-          <p className="text-[14px] text-[#A1A1AA] mt-0.5">{range.label} · {sales.period.days} days · Live</p>
+          <p className="text-[14px] text-[#A1A1AA] mt-0.5">{rangeText(range)} · {sales.period.days} days · Live</p>
         </div>
         <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} />
       </div>
@@ -244,9 +267,9 @@ export default function SalesPage() {
         <KPICard label="Gross Sales" value={formatINR(sales.kpis.grossSales)} />
         <KPICard label="Total Orders" value={sales.kpis.totalOrders.toString()} />
         <KPICard label="Avg Order Value" value={formatINR(sales.kpis.aov)} />
-        <KPICard label="ROAS" value={meta ? `${meta.roas}x` : "-"}
-          change={meta ? (meta.roas >= 2 ? 1 : -1) : undefined}
-          changeLabel={meta ? (meta.roas >= 3 ? "Strong" : meta.roas >= 2 ? "Average" : "Below target") : adsLoading ? "Loading…" : "Connect Meta"} />
+        <KPICard label={meta && gads ? "ROAS (all ads)" : "ROAS"} value={adRoas !== null ? `${adRoas}x` : "-"}
+          change={adRoas !== null ? (adRoas >= 2 ? 1 : -1) : undefined}
+          changeLabel={adRoas !== null ? (adRoas >= 3 ? "Strong" : adRoas >= 2 ? "Average" : "Below target") : adsLoading ? "Loading…" : meta || gads ? "No ad spend" : "Connect Meta or Google Ads"} />
         <KPICard label="CAC" value={cacValue !== null ? formatINR(cacValue) : "-"}
           sub={metaConnected ? (cacIsSalesScoped ? "Per order · Sales ads only" : "Cost per acquisition") : adsLoading ? "Loading…" : "Connect Meta Ads"} />
       </div>
@@ -256,7 +279,8 @@ export default function SalesPage() {
 
         {/* Channel Attribution */}
         <Card className="col-span-1 lg:col-span-2">
-          <CardHeader title="Channel Attribution" right={<span className="text-[13px] text-[#A1A1AA]">Meta + Organic = Shopify total</span>} />
+          <CardHeader title="Channel Attribution" right={<span className="text-[13px] text-[#A1A1AA]">{gads ? "Meta + Google + Organic" : "Meta + Organic"} = Shopify total</span>} />
+          {gadsIssue && <p className="text-[13px] text-[#92400E] dark:text-[#FCD34D] mb-2">Google Ads isn&apos;t in these numbers, so organic may look higher than it is. {gadsIssueText(gadsIssue)}</p>}
 
           {/* Channel mini-cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
@@ -269,7 +293,7 @@ export default function SalesPage() {
                 <div className="text-[18px] font-black text-[#18181B] dark:text-[#F4F4F5]">
                   {ch.revenue !== null ? formatINR(ch.revenue) : <span className="text-[#A1A1AA] text-[15px]">-</span>}
                 </div>
-                <div className="text-[13px] text-[#A1A1AA]">{ch.orders !== null ? `${ch.orders} orders` : <Link href="/dashboard/connections" className="text-[#F97316] font-semibold">Connect →</Link>}</div>
+                <div className="text-[13px] text-[#A1A1AA]">{ch.orders !== null ? `${ch.orders} ${ch.unit}` : adsLoading ? "Loading…" : <Link href="/dashboard/connections" className="text-[#F97316] font-semibold">Connect →</Link>}</div>
                 {ch.spend !== null && (
                   <div className="mt-1.5 pt-1.5 border-t border-black/[0.06] dark:border-white/[0.06] space-y-0.5">
                     <div className="text-[12px] text-[#A1A1AA]">Spend: <span className="font-semibold text-[#18181B] dark:text-[#F4F4F5]">{formatINR(ch.spend)}</span></div>
@@ -293,7 +317,7 @@ export default function SalesPage() {
               {[
                 { label: "Shopify Total", Icon: ShoppingCart, ic: "text-[#F97316]", orders: sales.kpis.totalOrders, revenue: sales.kpis.grossSales, spend: "-", roas: "-", ctr: "-" },
                 { label: "Meta Ads", Icon: Share2, ic: "text-[#1877F2]", orders: metaConnected ? metaOrders : "-", revenue: metaConnected ? formatINR(metaRevenue) : "-", spend: metaConnected && meta ? formatINR(meta.spend) : "-", roas: metaConnected && meta ? meta.roas : "-", ctr: metaConnected && meta ? `${meta.ctr}%` : "-" },
-                { label: "Google Ads", Icon: Megaphone, ic: "text-[#4285F4]", orders: "-", revenue: "-", spend: "-", roas: "-", ctr: "-" },
+                { label: "Google Ads", Icon: Megaphone, ic: "text-[#4285F4]", orders: gads ? `${googleConversions} conv.` : "-", revenue: gads ? formatINR(googleRevenue) : "-", spend: gads ? formatINR(gads.spend) : "-", roas: gads && googleRevenue > 0 ? gads.roas : "-", ctr: gads ? `${gads.ctr}%` : "-" },
                 { label: "Organic/Direct", Icon: TrendingUp, ic: "text-[#22C55E]", orders: organicOrders, revenue: formatINR(organicRevenue), spend: "-", roas: "-", ctr: "-" },
               ].map((row, i) => (
                 <tr key={i} className="border-b border-black/[0.04] dark:border-white/[0.04] last:border-0 hover:bg-[#F5F5F4] dark:hover:bg-[#1C1C1C] transition-colors">

@@ -44,6 +44,19 @@ export function zonedDayEndISO(dateStr: string, timeZone: string): string {
   return new Date(naiveUtc.getTime() - tzOffsetMs(timeZone, naiveUtc)).toISOString();
 }
 
+/** Real dates for a span, as compact as they can be without being ambiguous:
+ *  "2 Nov 2026" · "1 - 2 Nov 2026" · "28 Oct - 2 Nov 2026" · "28 Dec 2025 - 2 Jan 2026".
+ *  Lives here so emails and API routes can use it too, not just client components. */
+export function formatDateSpan(from: string, to: string): string {
+  const d1 = new Date(from + "T00:00:00");
+  const d2 = new Date(to + "T00:00:00");
+  const dayMonthYear = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  if (from === to) return dayMonthYear(d1);
+  if (d1.getFullYear() !== d2.getFullYear()) return `${dayMonthYear(d1)} - ${dayMonthYear(d2)}`;
+  if (d1.getMonth() !== d2.getMonth()) return `${d1.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} - ${dayMonthYear(d2)}`;
+  return `${d1.getDate()} - ${dayMonthYear(d2)}`;
+}
+
 // Inclusive whole-day count between two YYYY-MM-DD strings.
 export function dayCount(startYmd: string, endYmd: string): number {
   return Math.max(1, Math.round((Date.parse(endYmd) - Date.parse(startYmd)) / 86_400_000) + 1);

@@ -3,10 +3,24 @@ import { useState, useEffect, useCallback } from "react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { formatINR } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { formatDateSpan, toLocalYMD } from "@/lib/date-range-context";
+import { fetchGoogleAds, type GadsResult } from "@/lib/gads-client";
 import { Lightbulb, Target, TrendingUp, TrendingDown, Calendar, CheckCircle2, XCircle, Clock } from "lucide-react";
 
 /* ─── Types ──────────────────────────────────────────────────── */
 interface LiveData { grossSales: number; totalOrders: number; aov: number; roas: number | null; spend: number | null }
+
+// One month's numbers across every ad platform that's connected. Null means no ad platform answered.
+function toLiveData(s: { kpis?: { grossSales?: number; totalOrders?: number; aov?: number } } | null, m: { kpis?: { spend?: number; purchaseValue?: number } } | null, g: GadsResult): LiveData {
+  const hasAds = !!m?.kpis || !!g.data;
+  const spend = (m?.kpis?.spend ?? 0) + (g.data?.kpis.spend ?? 0);
+  const value = (m?.kpis?.purchaseValue ?? 0) + (g.data?.kpis.conversionValue ?? 0);
+  return {
+    grossSales: s?.kpis?.grossSales ?? 0, totalOrders: s?.kpis?.totalOrders ?? 0, aov: s?.kpis?.aov ?? 0,
+    roas: hasAds ? (spend > 0 ? +(value / spend).toFixed(2) : 0) : null,
+    spend: hasAds ? spend : null,
+  };
+}
 interface GoalRecord {
   month: string;
   salesTarget: number; roasTarget: number; aovTarget: number; ordersTarget: number; spendBudget: number;
@@ -105,36 +119,36 @@ export default function GoalsPage() {
 
   /* ── Fetch current month live data ── */
   const firstDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-  const today = now.toISOString().split("T")[0];
+  const today = toLocalYMD(now);
+  const lmFrom = toLocalYMD(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const lmTo = toLocalYMD(new Date(now.getFullYear(), now.getMonth(), 0));
 
   useEffect(() => {
     setLoadingCurrent(true);
     Promise.allSettled([
       fetch(`/api/shopify/dashboard?from=${firstDay}&to=${today}`).then(r => r.json()),
       fetch(`/api/meta?from=${firstDay}&to=${today}`).then(r => r.json()),
-    ]).then(([sRes, mRes]) => {
+      fetchGoogleAds(firstDay, today),
+    ]).then(([sRes, mRes, gRes]) => {
       const s = sRes.status === "fulfilled" && !sRes.value?.error ? sRes.value : null;
       const m = mRes.status === "fulfilled" && !mRes.value?.error ? mRes.value : null;
-      setCurrent({ grossSales: s?.kpis?.grossSales ?? 0, totalOrders: s?.kpis?.totalOrders ?? 0, aov: s?.kpis?.aov ?? 0, roas: m?.kpis?.roas ?? null, spend: m?.kpis?.spend ?? null });
+      setCurrent(toLiveData(s, m, gRes.status === "fulfilled" ? gRes.value : { data: null, issue: null }));
     }).finally(() => setLoadingCurrent(false));
   }, [firstDay, today]);
 
   /* ── Fetch last month data ── */
   useEffect(() => {
-    const lmStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const lmEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-    const from = lmStart.toISOString().split("T")[0];
-    const to = lmEnd.toISOString().split("T")[0];
     setLoadingLast(true);
     Promise.allSettled([
-      fetch(`/api/shopify/dashboard?from=${from}&to=${to}`).then(r => r.json()),
-      fetch(`/api/meta?from=${from}&to=${to}`).then(r => r.json()),
-    ]).then(([sRes, mRes]) => {
+      fetch(`/api/shopify/dashboard?from=${lmFrom}&to=${lmTo}`).then(r => r.json()),
+      fetch(`/api/meta?from=${lmFrom}&to=${lmTo}`).then(r => r.json()),
+      fetchGoogleAds(lmFrom, lmTo),
+    ]).then(([sRes, mRes, gRes]) => {
       const s = sRes.status === "fulfilled" && !sRes.value?.error ? sRes.value : null;
       const m = mRes.status === "fulfilled" && !mRes.value?.error ? mRes.value : null;
-      setLastMonth({ grossSales: s?.kpis?.grossSales ?? 0, totalOrders: s?.kpis?.totalOrders ?? 0, aov: s?.kpis?.aov ?? 0, roas: m?.kpis?.roas ?? null, spend: m?.kpis?.spend ?? null });
+      setLastMonth(toLiveData(s, m, gRes.status === "fulfilled" ? gRes.value : { data: null, issue: null }));
     }).finally(() => setLoadingLast(false));
-  }, []);
+  }, [lmFrom, lmTo]);
 
   /* ── Apply last month as baseline ── */
   function applyLastMonth(mult: number) {
@@ -210,7 +224,7 @@ export default function GoalsPage() {
             <div>
               <div className="flex items-center gap-1.5 mb-2">
                 <Lightbulb size={13} className="text-[#F97316]" />
-                <span className="text-[14px] font-bold text-[#EA580C] uppercase tracking-[0.1em]">{lmMonthName} Actuals - use as baseline</span>
+                <span className="text-[14px] font-bold text-[#EA580C] uppercase tracking-[0.1em]">{lmMonthName} Actuals ({formatDateSpan(lmFrom, lmTo)}) - use as baseline</span>
               </div>
               <div className="flex flex-wrap items-center gap-4">
                 {[

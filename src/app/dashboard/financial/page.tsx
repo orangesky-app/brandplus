@@ -1,8 +1,10 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { formatINR } from "@/lib/utils";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan, rangeDays } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
+import { fetchGoogleAds, gadsIssueText, type GadsIssue, type GadsKpis } from "@/lib/gads-client";
 import { Settings2, ChevronDown, ChevronUp, TrendingUp, TrendingDown, AlertTriangle, Receipt } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Donut } from "@/components/ui/charts";
@@ -16,7 +18,7 @@ interface ShopifyKpis {
 }
 
 interface MetaKpis {
-  spend: number; roas: number; cac: number; purchases: number;
+  spend: number; roas: number; cac: number; purchases: number; purchaseValue: number;
 }
 
 interface PLInputs {
@@ -143,6 +145,8 @@ export default function FinancialPage() {
   const [metaConnected, setMetaConnected] = useState(false);
   const [shopify, setShopify] = useState<ShopifyKpis | null>(null);
   const [meta, setMeta] = useState<MetaKpis | null>(null);
+  const [gads, setGads] = useState<GadsKpis | null>(null);
+  const [gadsIssue, setGadsIssue] = useState<GadsIssue | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Load saved inputs from localStorage
@@ -163,29 +167,34 @@ export default function FinancialPage() {
     setShowSetup(false);
   };
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    // A profit figure must never mix one period's sales with another's ad spend.
+    let stale = false;
     setLoading(true);
-    try {
-      const [shopRes, metaAccRes] = await Promise.all([
-        fetch(`/api/shopify/dashboard?from=${range.from}&to=${range.to}`),
-        fetch("/api/meta/accounts"),
-      ]);
-      const shopJson = await shopRes.json();
-      const metaAccJson = await metaAccRes.json();
-      if (!shopJson.error) setShopify(shopJson.kpis);
-      const connected = !metaAccJson.error;
-      setMetaConnected(connected);
-      if (connected) {
-        const metaRes = await fetch(`/api/meta?from=${range.from}&to=${range.to}`);
-        const metaJson = await metaRes.json();
-        if (!metaJson.error) setMeta(metaJson.kpis);
+    setShopify(null); setMeta(null); setGads(null); setGadsIssue(null);
+    (async () => {
+      try {
+        const [shopRes, metaAccRes, g] = await Promise.all([
+          fetch(`/api/shopify/dashboard?from=${range.from}&to=${range.to}`),
+          fetch("/api/meta/accounts"),
+          fetchGoogleAds(range.from, range.to),
+        ]);
+        const shopJson = await shopRes.json();
+        const metaAccJson = await metaAccRes.json();
+        const connected = !metaAccJson.error;
+        const metaJson = connected ? await (await fetch(`/api/meta?from=${range.from}&to=${range.to}`)).json() : null;
+        if (stale) return;
+        if (!shopJson.error) setShopify(shopJson.kpis);
+        setMetaConnected(connected);
+        if (metaJson && !metaJson.error) setMeta(metaJson.kpis);
+        setGads(g.data?.kpis ?? null);
+        setGadsIssue(g.issue);
+      } finally {
+        if (!stale) setLoading(false);
       }
-    } finally {
-      setLoading(false);
-    }
+    })();
+    return () => { stale = true; };
   }, [range.from, range.to]);
-
-  useEffect(() => { load(); }, [load]);
 
   // ── P&L calculation ────────────────────────────────────────────────────────
   const grossSales      = shopify?.grossSales ?? 0;
@@ -213,17 +222,22 @@ export default function FinancialPage() {
   const gatewayFeeTotal = Math.round(prepaidRevenue * (saved.gatewayPct / 100));
 
   const grossProfit     = netRevenue - cogsTotal - shippingTotal - rtoTotal - codFeeTotal - gatewayFeeTotal;
-  const adSpend         = meta?.spend ?? 0;
+  const metaSpend       = meta?.spend ?? 0;
+  const googleSpend     = gads?.spend ?? 0;
+  const adSpend         = metaSpend + googleSpend;
   const afterAdsProfit  = grossProfit - adSpend;
 
   // Pro-rate monthly overheads to the date range
-  const days            = Math.max(1, Math.round((new Date(range.to).getTime() - new Date(range.from).getTime()) / 86400000) + 1);
+  const days            = rangeDays(range);
   const overheadsForPeriod = Math.round((saved.monthlyOverheads / 30) * days);
   const netProfit       = afterAdsProfit - overheadsForPeriod;
 
   const grossMarginPct  = netRevenue > 0 ? (grossProfit / netRevenue) * 100 : 0;
   const netMarginPct    = grossSales > 0 ? (netProfit / grossSales) * 100 : 0;
-  const currentRoas     = meta?.roas ?? 0;
+  // Sales each ad platform claims, per ₹1 across both.
+  const adSalesValue    = (meta?.purchaseValue ?? 0) + (gads?.conversionValue ?? 0);
+  const currentRoas     = adSpend > 0 ? +(adSalesValue / adSpend).toFixed(2) : 0;
+  const hasAdValue      = adSalesValue > 0;
 
   // Break-even ROAS = revenue needed per ₹ of ad spend to cover all non-ad costs
   const nonAdCosts = cogsTotal + shippingTotal + rtoTotal + codFeeTotal + gatewayFeeTotal + overheadsForPeriod;
@@ -241,7 +255,8 @@ export default function FinancialPage() {
     { label: "Shipping", pct: pctOf(shippingTotal), color: "bg-[#64748B]" },
     { label: "RTO losses", pct: pctOf(rtoTotal), color: "bg-[#EF4444]" },
     { label: "Fees (COD/gateway)", pct: pctOf(codFeeTotal + gatewayFeeTotal), color: "bg-[#F97316]" },
-    { label: "Meta ads", pct: pctOf(adSpend), color: "bg-[#3B82F6]" },
+    { label: "Meta ads", pct: pctOf(metaSpend), color: "bg-[#3B82F6]" },
+    { label: "Google ads", pct: pctOf(googleSpend), color: "bg-[#EAB308]" },
     { label: "Overheads", pct: pctOf(overheadsForPeriod), color: "bg-[#8B5CF6]" },
     { label: profitPct >= 0 ? "Profit" : "Loss", pct: Math.abs(profitPct), color: profitPct >= 0 ? "bg-[#22C55E]" : "bg-[#DC2626]" },
   ].filter(s => s.pct > 0.5);
@@ -255,7 +270,7 @@ export default function FinancialPage() {
         <div>
           <h2 className="text-lg font-bold dark:text-[#F4F4F5] flex items-center gap-2"><Receipt size={18} className="text-[#F97316]" /> Financial P&amp;L</h2>
           <p className="text-[15px] text-[#A1A1AA] mt-0.5">
-            {range.from} → {range.to} · Real data from Shopify{metaConnected ? " + Meta" : ""}
+            <RangeText /> · Real data from Shopify{metaConnected ? " + Meta" : ""}{gads ? " + Google Ads" : ""}
           </p>
         </div>
         <button onClick={() => setShowSetup(s => !s)}
@@ -271,7 +286,7 @@ export default function FinancialPage() {
         <Card className="mb-4 border-[#F97316]/30">
           <CardHeader title="Your cost setup" right="Saved to your browser" />
           <div className="text-[14px] text-[#A1A1AA] mb-4">
-            We have your sales, ad spend, and orders from Shopify/Meta. Tell us your costs - we&apos;ll calculate the real profit.
+            We have your sales, ad spend, and orders from Shopify, Meta and Google Ads. Tell us your costs - we&apos;ll calculate the real profit.
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <InputField
@@ -288,7 +303,7 @@ export default function FinancialPage() {
             />
             <InputField
               label="RTO rate - COD orders that come back (%)"
-              hint="What % of your COD orders are returned undelivered? Print-on-demand typically 20–40%"
+              hint="What % of your COD orders are returned undelivered? Print-on-demand typically 20-40%"
               value={inputs.rtoRate}
               onChange={v => setInputs(i => ({ ...i, rtoRate: v }))}
               isPercent min={0} max={80} step={1}
@@ -343,7 +358,7 @@ export default function FinancialPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {/* ── P&L Statement ────────────────────────────────── */}
         <Card>
-          <CardHeader title="P&L Statement" right={`${range.from} → ${range.to}`} />
+          <CardHeader title="P&L Statement" right={formatDateSpan(range.from, range.to)} />
 
           <div className="text-[12px] font-bold text-[#A1A1AA] uppercase tracking-widest mt-2 mb-1">Money In</div>
           <Row label="Total sales" value={grossSales} bold sub={`${totalOrders} orders · from Shopify`} />
@@ -384,10 +399,19 @@ export default function FinancialPage() {
           <div className="text-[12px] font-bold text-[#A1A1AA] uppercase tracking-widest mt-3 mb-1">Marketing</div>
           <Row
             label="Meta ad spend"
-            value={adSpend}
+            value={metaSpend}
             deduct
-            sub={metaConnected ? `ROAS ${currentRoas}x · ₹1 spent → ₹${currentRoas} in sales` : "Meta not connected - connect for real ad spend"}
-            muted={!metaConnected}
+            sub={meta ? `ROAS ${meta.roas}x · ₹1 spent → ₹${meta.roas} in sales` : "Meta not connected - connect for real ad spend"}
+            muted={!meta}
+          />
+          <Row
+            label="Google Ads spend"
+            value={gads ? googleSpend : null}
+            deduct
+            sub={gads
+              ? (gads.conversionValue > 0 ? `ROAS ${gads.roas}x · ₹1 spent → ₹${gads.roas} in sales` : `${Math.round(gads.conversions).toLocaleString("en-IN")} conversions · no ₹ value recorded`)
+              : gadsIssueText(gadsIssue) ?? "Google Ads not connected - connect for real ad spend"}
+            muted={!gads}
           />
           <Row label="After-ads profit" value={afterAdsProfit} bold separator />
 
@@ -446,9 +470,9 @@ export default function FinancialPage() {
                 good: grossMarginPct >= 30,
               },
               {
-                label: meta ? `ROAS ${currentRoas}x` : "Ad ROAS",
-                value: meta ? (currentRoas >= 3 ? "Good" : currentRoas >= 2 ? "OK" : "Below target") : "-",
-                sub: meta ? `₹1 ad → ₹${currentRoas} sales` : "Connect Meta",
+                label: hasAdValue ? `ROAS ${currentRoas}x` : "Ad ROAS",
+                value: hasAdValue ? (currentRoas >= 3 ? "Good" : currentRoas >= 2 ? "OK" : "Below target") : "-",
+                sub: hasAdValue ? `₹1 ad → ₹${currentRoas} sales${meta && gads ? " · Meta + Google" : ""}` : meta || gads ? "No ad sales tracked" : "Connect Meta or Google Ads",
                 good: currentRoas >= 3,
               },
               {
@@ -511,14 +535,14 @@ export default function FinancialPage() {
                   <span className="font-bold text-[#DC2626] dark:text-[#FCA5A5]">RTO is costing you more than ads</span> - {formatINR(rtoTotal)} lost to returns vs {formatINR(adSpend)} in ads. Add prepaid incentives (discount, free shipping on UPI) to reduce COD %.
                 </div>
               )}
-              {meta && beRoas && currentRoas < beRoas && (
+              {hasAdValue && beRoas && currentRoas < beRoas && (
                 <div className="text-[14px] leading-relaxed border-l-[3px] border-l-[#F97316] bg-[#FFF7ED] dark:bg-[#2A1A0E] rounded-r-xl pl-3 py-2 pr-2">
                   <span className="font-bold text-[#EA580C] dark:text-[#FB923C]">Ads not yet profitable</span> - you need {beRoas}x ROAS to break even, currently at {currentRoas}x. Pause low-ROAS campaigns and tighten targeting before scaling.
                 </div>
               )}
-              {meta && beRoas && currentRoas >= beRoas && (
+              {hasAdValue && beRoas && currentRoas >= beRoas && (
                 <div className="text-[14px] leading-relaxed border-l-[3px] border-l-[#22C55E] bg-[#F0FDF4] dark:bg-[#052E16] rounded-r-xl pl-3 py-2 pr-2">
-                  <span className="font-bold text-[#15803D] dark:text-[#86EFAC]">Ads are profitable</span> - your {currentRoas}x ROAS is above the {beRoas}x break-even. You can safely increase spend by 20–30% on winning campaigns.
+                  <span className="font-bold text-[#15803D] dark:text-[#86EFAC]">Ads are profitable</span> - your {currentRoas}x ROAS is above the {beRoas}x break-even. You can safely increase spend by 20-30% on winning campaigns.
                 </div>
               )}
               {!inputsConfigured && (
@@ -530,7 +554,7 @@ export default function FinancialPage() {
           </Card>
 
           {/* Unit economics */}
-          {(meta || shopify) && (
+          {(meta || gads || shopify) && (
             <Card>
               <CardHeader title="Per-order economics" />
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">

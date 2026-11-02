@@ -13,10 +13,11 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ error: "not_connected" }, { status: 401 });
   const { shop, token } = session;
 
-  const now = new Date();
-  const days = now.getDate();
-  // Month-to-date in the store's timezone.
-  const { startISO } = await resolveShopifyPeriod(shop, token, null, null);
+  // Month-to-date in the store's timezone, including the day count: the server's own clock
+  // is UTC and can still be on the previous day for an Indian store.
+  const { startISO, startYmd, endYmd, days } = await resolveShopifyPeriod(shop, token, null, null);
+  const [startY, startM] = startYmd.split("-").map(Number);
+  const daysInMonth = new Date(startY, startM, 0).getDate();
 
   const [orders, products, customers] = await Promise.all([
     fetchOrdersInRange(shop, token, startISO),
@@ -40,11 +41,11 @@ export async function GET(req: NextRequest) {
   }).join(", ");
 
   const dailyAvg = days > 0 ? Math.round(grossSales / days) : 0;
-  const projectedMonthly = dailyAvg * 30;
+  const projectedMonthly = dailyAvg * daysInMonth;
 
   const dataContext = `
 Store: ${shop}
-Month so far (${days} days): ₹${Math.round(grossSales)} revenue, ${totalOrders} orders, AOV ₹${aov}
+Month so far (${startYmd} to ${endYmd}, ${days} of ${daysInMonth} days): ₹${Math.round(grossSales)} revenue, ${totalOrders} orders, AOV ₹${aov}
 Daily average: ₹${dailyAvg} → projected monthly ₹${projectedMonthly}
 COD ratio: ${codPct}% (${codOrders} of ${totalOrders} orders)
 Total customers: ${totalCustomers}, Repeat rate: ${repeatRate}%, Avg LTV: ₹${avgLTV}
@@ -69,5 +70,6 @@ Be direct, India-specific, and use ₹ for currency. Never give generic advice. 
   return NextResponse.json({
     insights: aiText,
     metrics: { grossSales: Math.round(grossSales), totalOrders, aov, codPct, repeatRate, avgLTV, projectedMonthly, days },
+    period: { from: startYmd, to: endYmd },
   });
 }

@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { NotConnected } from "@/components/ui/not-connected";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan } from "@/lib/date-range-context";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from "recharts";
 import { AlertTriangle, CheckCircle2, Trophy, Wallet, Target } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -392,7 +392,7 @@ export default function PlacementPage() {
     await exportToPDF(
       `skylitee-placement-${data.period.from}`,
       "Ads Placement Report",
-      `${data.adAccountName} · ${data.period.from} → ${data.period.to}`,
+      `${data.adAccountName} · ${formatDateSpan(data.period.from, data.period.to)}`,
       buildSections()
     );
   }
@@ -441,7 +441,7 @@ export default function PlacementPage() {
         <div>
           <h2 className="text-lg font-bold text-[#18181B] dark:text-[#F4F4F5]">Ads Placement</h2>
           <p className="text-[15px] text-[#A1A1AA] mt-0.5">
-            {data.adAccountName} · {data.period.from} → {data.period.to} · {data.placements.length} placements
+            {data.adAccountName} · {formatDateSpan(data.period.from, data.period.to)} · {data.placements.length} placements
           </p>
         </div>
         <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} />

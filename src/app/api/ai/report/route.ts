@@ -8,15 +8,16 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid body" }, { status: 400 });
 
-  const { shopify, meta, gsc, ga4, period } = body as {
+  const { shopify, meta, gads, gsc, ga4, period } = body as {
     shopify: Record<string, unknown> | null;
     meta: Record<string, unknown> | null;
+    gads: Record<string, unknown> | null;
     gsc: Record<string, unknown> | null;
     ga4: Record<string, unknown> | null;
     period: { from: string; to: string };
   };
 
-  if (!shopify && !meta && !gsc && !ga4) {
+  if (!shopify && !meta && !gads && !gsc && !ga4) {
     return NextResponse.json({ error: "No platform data provided." }, { status: 400 });
   }
 
@@ -48,6 +49,21 @@ export async function POST(req: NextRequest) {
     if (campaigns?.length) {
       const top = [...campaigns].sort((a, b) => b.roas - a.roas).slice(0, 3);
       lines.push(`Top campaigns: ${top.map(c => `"${c.name}" ROAS ${c.roas}x, spend Rs.${(c.spend ?? 0).toLocaleString("en-IN")}`).join(" | ")}`);
+    }
+    lines.push("");
+  }
+
+  if (gads) {
+    const k = gads.kpis as Record<string, number>;
+    lines.push("=== GOOGLE ADS ===");
+    lines.push(`Spend: Rs.${(k.spend ?? 0).toLocaleString("en-IN")}, ROAS: ${k.roas ?? 0}x, Cost per conversion: Rs.${k.costPerConversion ?? 0}`);
+    // Google's total across every conversion goal, which may include more than purchases.
+    lines.push(`Conversions: ${Math.round(k.conversions ?? 0)}, Conversion value: Rs.${(k.conversionValue ?? 0).toLocaleString("en-IN")}`);
+    lines.push(`Clicks: ${k.clicks ?? 0}, Impressions: ${k.impressions ?? 0}, CTR: ${k.ctr ?? 0}%, Avg CPC: Rs.${k.avgCpc ?? 0}`);
+    const campaigns = gads.campaigns as {name: string; roas: number; spend: number; conversions: number}[];
+    if (campaigns?.length) {
+      const top = [...campaigns].sort((a, b) => b.spend - a.spend).slice(0, 3);
+      lines.push(`Top campaigns by spend: ${top.map(c => `"${c.name}" ROAS ${c.roas}x, spend Rs.${(c.spend ?? 0).toLocaleString("en-IN")}, ${Math.round(c.conversions ?? 0)} conversions`).join(" | ")}`);
     }
     lines.push("");
   }
@@ -136,7 +152,7 @@ ${dataContext}`;
 
   return NextResponse.json({
     report,
-    platforms: { shopify: !!shopify, meta: !!meta, gsc: !!gsc, ga4: !!ga4 },
+    platforms: { shopify: !!shopify, meta: !!meta, gads: !!gads, gsc: !!gsc, ga4: !!ga4 },
     generatedAt: new Date().toISOString(),
   });
 }

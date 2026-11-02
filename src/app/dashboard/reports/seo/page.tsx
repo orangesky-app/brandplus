@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeText, formatDateSpan } from "@/lib/date-range-context";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV } from "@/lib/export";
@@ -93,7 +93,7 @@ export default function SEOReportPage() {
         ["CTR", `${data.kpis.ctr}%`, "Target: > 2%"],
         ["Avg Position", data.kpis.avgPosition.toFixed(1), "Target: < 10"],
         ["Site", data.site, "-"],
-        ["Period", `${data.period.startDate} → ${data.period.endDate}`, "-"],
+        ["Period", formatDateSpan(data.period.startDate, data.period.endDate), "-"],
       ]},
     ];
     if (ga4?.organic) secs.push({ title: "Organic (GA4)", headers: ["Metric", "Value", "Benchmark"], rows: [
@@ -196,14 +196,14 @@ export default function SEOReportPage() {
             <div className="w-7 h-7 bg-[#4285F4] rounded-lg flex items-center justify-center"><Search size={14} className="text-white" /></div>
             <h1 className="text-xl font-bold text-[#18181B] dark:text-[#F4F4F5]">SEO Report</h1>
           </div>
-          <p className="text-[14px] text-[#A1A1AA] ml-9">{data.site} · {range.label} · GSC + GA4 · Generated {generatedAt}</p>
+          <p className="text-[14px] text-[#A1A1AA] ml-9">{data.site} · {rangeText(range)} · GSC + GA4 · Generated {generatedAt}</p>
         </div>
         <div data-html2canvas-ignore="true">
           <ExportButton
             onExportCSV={() => exportToCSV(`skylitee-seo-report-${range.from}`, buildSections())}
             onExportPDF={() => printRef.current ? exportElementToPDF(printRef.current, `skylitee-seo-report-${range.from}`, {
               reportTitle: "SEO Report",
-              subtitle: `${data.site} · ${range.label}`,
+              subtitle: `${data.site} · ${rangeText(range)}`,
               branding: { brandName: "Skylitee", color: "#4285F4" },
             }) : Promise.resolve()}
           />
@@ -467,7 +467,7 @@ export default function SEOReportPage() {
 
     {/* Off-screen, PDF-optimized layout - captured for the PDF export (bigger fonts, color, dense). */}
     <div ref={printRef} aria-hidden style={{ position: "absolute", left: -10000, top: 0, pointerEvents: "none" }}>
-      <PrintableSEO data={data} ga4={ga4} monthly={monthly} ga4Monthly={ga4Monthly} site={data.site} rangeLabel={range.label} generatedAt={generatedAt} />
+      <PrintableSEO data={data} ga4={ga4} monthly={monthly} ga4Monthly={ga4Monthly} site={data.site} rangeLabel={rangeText(range)} generatedAt={generatedAt} />
     </div>
     </>
   );

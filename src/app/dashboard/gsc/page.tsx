@@ -8,7 +8,7 @@ import { Search, TrendingUp, CheckCircle2, AlertTriangle, XCircle, Map } from "l
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
 import Link from "next/link";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan } from "@/lib/date-range-context";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { cn } from "@/lib/utils";
 
@@ -132,7 +132,7 @@ export default function GSCPage() {
           ["CTR", `${data.kpis.ctr}%`],
           ["Avg Position", data.kpis.avgPosition.toFixed(1)],
           ["Site", data.site],
-          ["Period", `${data.period.startDate} → ${data.period.endDate}`],
+          ["Period", formatDateSpan(data.period.startDate, data.period.endDate)],
         ],
       },
       {
@@ -169,7 +169,7 @@ export default function GSCPage() {
     await exportToPDF(
       `skylitee-gsc-${range.from}`,
       "Google Search Console Report",
-      `${data.site} · ${data.period.startDate} → ${data.period.endDate}`,
+      `${data.site} · ${formatDateSpan(data.period.startDate, data.period.endDate)}`,
       buildSections()
     );
   }
@@ -179,7 +179,7 @@ export default function GSCPage() {
       <div className="flex items-start justify-between mb-3">
         <div>
           <h2 className="text-lg font-bold dark:text-[#F4F4F5]">Google Search Console</h2>
-          <p className="text-[15px] text-[#A1A1AA] mt-0.5">{data.site} · {data.period.startDate} → {data.period.endDate}</p>
+          <p className="text-[15px] text-[#A1A1AA] mt-0.5">{data.site} · {formatDateSpan(data.period.startDate, data.period.endDate)} · Google shares search data 2-3 days late</p>
         </div>
         <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} />
       </div>
@@ -275,7 +275,7 @@ export default function GSCPage() {
         <div className="space-y-3">
           {dailyFormatted.length > 0 && (
             <Card>
-              <CardHeader title="Daily clicks & impressions" right={`${data.period.startDate} → ${data.period.endDate}`} />
+              <CardHeader title="Daily clicks & impressions" right={formatDateSpan(data.period.startDate, data.period.endDate)} />
               <div className="h-48">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={dailyFormatted} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>

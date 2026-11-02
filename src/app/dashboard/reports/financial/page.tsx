@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeDays, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
+import { fetchGoogleAds, gadsIssueText, type GadsData, type GadsIssue } from "@/lib/gads-client";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
@@ -44,18 +46,26 @@ export default function FinancialReportPage() {
   const { range } = useDateRange();
   const [sales, setSales] = useState<SalesData | null>(null);
   const [meta, setMeta] = useState<MetaData | null>(null);
+  const [gads, setGads] = useState<GadsData | null>(null);
+  const [gadsIssue, setGadsIssue] = useState<GadsIssue | null>(null);
   const [loading, setLoading] = useState(true);
   const generatedAt = new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
   useEffect(() => {
+    let stale = false;
     setLoading(true);
+    setSales(null); setMeta(null); setGads(null); setGadsIssue(null);
     Promise.allSettled([
       fetch(`/api/shopify/sales?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/meta?from=${range.from}&to=${range.to}`).then(r => r.json()),
-    ]).then(([sR, mR]) => {
+      fetchGoogleAds(range.from, range.to),
+    ]).then(([sR, mR, gR]) => {
+      if (stale) return;
       if (sR.status === "fulfilled" && !sR.value?.error) setSales(sR.value);
       if (mR.status === "fulfilled" && !mR.value?.error) setMeta(mR.value);
-    }).finally(() => setLoading(false));
+      if (gR.status === "fulfilled") { setGads(gR.value.data); setGadsIssue(gR.value.issue); }
+    }).finally(() => { if (!stale) setLoading(false); });
+    return () => { stale = true; };
   }, [range.from, range.to]);
 
   if (loading) return <div className="text-[16px] text-[#A1A1AA] py-20 text-center">Loading financial data…</div>;
@@ -68,12 +78,16 @@ export default function FinancialReportPage() {
 
   const s = sales.kpis;
   const m = meta?.kpis;
-  const adSpend = m?.spend ?? 0;
+  const g = gads?.kpis;
+  const adSpend = (m?.spend ?? 0) + (g?.spend ?? 0);
   const netRevenue = s.grossSales - adSpend;
   const codPct = s.totalOrders ? Math.round((s.codOrders / s.totalOrders) * 100) : 0;
   const metaRevenue = m?.purchaseValue ?? 0;
-  const organicRevenue = Math.max(0, s.grossSales - metaRevenue);
-  const days = Math.max(1, Math.ceil((new Date(range.to).getTime() - new Date(range.from).getTime()) / (1000 * 60 * 60 * 24)));
+  const googleRevenue = g?.conversionValue ?? 0;
+  const googleOrders = Math.round(g?.conversions ?? 0);
+  const organicRevenue = Math.max(0, s.grossSales - metaRevenue - googleRevenue);
+  const organicOrders = Math.max(0, s.totalOrders - (m?.purchases ?? 0) - googleOrders);
+  const days = rangeDays(range);
   const dailyRevenue = s.grossSales / days;
   const dailySpend = adSpend / days;
 
@@ -82,11 +96,14 @@ export default function FinancialReportPage() {
 
   if (s.grossSales > 0) working.push({ metric: "Gross Revenue", value: formatINR(s.grossSales), detail: `${s.totalOrders} orders at ${formatINR(s.aov)} AOV - revenue engine is active. Avg daily revenue: ${formatINR(Math.round(dailyRevenue))}.` });
   if (m?.roas && m.roas >= 3) working.push({ metric: "Ad ROAS", value: `${m.roas}x`, detail: "Meta ads return more than 3x spend - ad investment is profitable. Safe to scale budget." });
+  if (g && googleRevenue > 0 && g.roas >= 3) working.push({ metric: "Google Ads ROAS", value: `${g.roas}x`, detail: "Google Ads returns more than 3x spend by its own tracking. Worth testing more budget on the best campaign." });
   if (s.returningCustomers > 0) working.push({ metric: "Returning Customers", value: s.returningCustomers.toString(), detail: `${s.returningCustomers} repeat buyers - organic repeat revenue with zero acquisition cost.` });
   if (codPct < 40) working.push({ metric: "Prepaid Rate", value: `${100 - codPct}%`, detail: "Majority of orders are prepaid - faster cash collection and lower RTO-related losses." });
 
   if (codPct > 50) attention.push({ metric: "COD Rate", value: `${codPct}%`, detail: "More than half your orders are COD - ties up cash and risks RTO losses. Offer Rs.75 prepaid discount to shift preference." });
   if (m && m.roas < 2) attention.push({ metric: "Ad ROAS", value: `${m.roas}x`, detail: "Below 2x - spending more on ads than the revenue they generate. Pause underperforming campaigns immediately." });
+  if (g && googleRevenue > 0 && g.roas < 2) attention.push({ metric: "Google Ads ROAS", value: `${g.roas}x`, detail: "Below 2x by Google's own tracking, which usually loses money once product costs are paid. Fix or pause the weakest campaigns." });
+  if (g && g.spend >= 500 && g.conversions === 0) attention.push({ metric: "Google Ads Conversions", value: "0", detail: `${formatINR(g.spend)} spent with nothing recorded. Check your conversion tag in Google Ads before judging the ads themselves.` });
   if (adSpend > 0 && adSpend / s.grossSales > 0.3) attention.push({ metric: "Ad-to-Revenue Ratio", value: `${Math.round((adSpend / s.grossSales) * 100)}%`, detail: "Ad spend is consuming more than 30% of revenue - leaves little room for COGS and margin. Improve ROAS or reduce spend." });
 
   function buildSections() {
@@ -96,17 +113,21 @@ export default function FinancialReportPage() {
         ["Gross Revenue", formatINR(s.grossSales)],
         ["Total Orders", s.totalOrders],
         ["AOV (Avg Order Value)", formatINR(s.aov)],
-        ["Ad Spend (Meta)", formatINR(adSpend)],
+        ["Ad Spend (total)", formatINR(adSpend)],
+        ["Ad Spend (Meta)", m ? formatINR(m.spend) : "N/A"],
+        ["Ad Spend (Google)", g ? formatINR(g.spend) : "N/A"],
         ["Net Revenue (after ad spend)", formatINR(netRevenue)],
         ["Meta ROAS", m ? `${m.roas}x` : "N/A"],
-        ["CAC", m ? formatINR(m.cac) : "N/A"],
+        ["Google Ads ROAS", g ? `${g.roas}x` : "N/A"],
+        ["CAC (Meta)", m ? formatINR(m.cac) : "N/A"],
         ["Avg Daily Revenue", formatINR(Math.round(dailyRevenue))],
         ["Avg Daily Ad Spend", formatINR(Math.round(dailySpend))],
         ["Period Days", days],
       ]},
       { title: "Revenue Split", headers: ["Source", "Revenue", "Orders", "%"], rows: [
         ["Meta Ads", formatINR(metaRevenue), m?.purchases ?? 0, `${s.grossSales > 0 ? Math.round((metaRevenue / s.grossSales) * 100) : 0}%`],
-        ["Organic / Direct", formatINR(organicRevenue), s.totalOrders - (m?.purchases ?? 0), `${s.grossSales > 0 ? Math.round((organicRevenue / s.grossSales) * 100) : 0}%`],
+        ...(g ? [["Google Ads", formatINR(googleRevenue), googleOrders, `${s.grossSales > 0 ? Math.round((googleRevenue / s.grossSales) * 100) : 0}%`] as (string | number)[]] : []),
+        ["Organic / Direct", formatINR(organicRevenue), organicOrders, `${s.grossSales > 0 ? Math.round((organicRevenue / s.grossSales) * 100) : 0}%`],
         ["Total", formatINR(s.grossSales), s.totalOrders, "100%"],
       ]},
       { title: "Payment Split", headers: ["Type", "Orders", "%"], rows: [
@@ -114,7 +135,8 @@ export default function FinancialReportPage() {
         ["COD", s.codOrders, `${codPct}%`],
       ]},
       ...(sales.allBySku?.length ? [{ title: "SKU Revenue", headers: ["Product", "Qty Sold", "Revenue", "Avg Price"], rows: sales.allBySku.map(p => [p.name, p.qty, formatINR(p.revenue), formatINR(p.qty > 0 ? Math.round(p.revenue / p.qty) : 0)]) as (string|number)[][] }] : []),
-      ...(meta?.campaigns?.length ? [{ title: "Campaign Spend", headers: ["Campaign", "Status", "Spend", "ROAS", "Orders"], rows: meta.campaigns.map(c => [c.name, c.status, formatINR(c.spend), `${c.roas}x`, c.purchases]) as (string|number)[][] }] : []),
+      ...(meta?.campaigns?.length ? [{ title: "Meta Campaign Spend", headers: ["Campaign", "Status", "Spend", "ROAS", "Orders"], rows: meta.campaigns.map(c => [c.name, c.status, formatINR(c.spend), `${c.roas}x`, c.purchases]) as (string|number)[][] }] : []),
+      ...(gads?.campaigns?.length ? [{ title: "Google Ads Campaign Spend", headers: ["Campaign", "Status", "Spend", "ROAS", "Conversions"], rows: gads.campaigns.map(c => [c.name, c.status, formatINR(c.spend), `${c.roas}x`, Math.round(c.conversions)]) as (string|number)[][] }] : []),
     ];
   }
 
@@ -130,13 +152,20 @@ export default function FinancialReportPage() {
             <div className="w-7 h-7 bg-[#16A34A] rounded-lg flex items-center justify-center"><DollarSign size={14} className="text-white" /></div>
             <h1 className="text-xl font-bold text-[#18181B] dark:text-[#F4F4F5]">Financial P&amp;L</h1>
           </div>
-          <p className="text-[14px] text-[#A1A1AA] ml-9">{range.label} · Generated {generatedAt}</p>
+          <p className="text-[14px] text-[#A1A1AA] ml-9"><RangeText /> · Generated {generatedAt}</p>
         </div>
         <ExportButton
           onExportCSV={() => exportToCSV(`skylitee-financial-${range.from}`, buildSections())}
-          onExportPDF={() => exportToPDF(`skylitee-financial-${range.from}`, "Financial P&L Report", range.label, buildSections())}
+          onExportPDF={() => exportToPDF(`skylitee-financial-${range.from}`, "Financial P&L Report", rangeText(range), buildSections())}
         />
       </div>
+
+      {gadsIssue && (
+        <div className="flex items-start gap-2.5 bg-[#FFFBEB] dark:bg-[#2D1C00]/40 border border-[#FCD34D] rounded-xl p-3">
+          <AlertTriangle size={14} className="text-[#D97706] shrink-0 mt-0.5" />
+          <p className="text-[14px] text-[#92400E] dark:text-[#FCD34D]">Google Ads isn&apos;t in these numbers, so real ad spend may be higher. {gadsIssueText(gadsIssue)}</p>
+        </div>
+      )}
 
       {/* COGS disclaimer */}
       <div className="flex items-start gap-2.5 bg-[#EFF6FF] dark:bg-[#1E3A5F]/30 border border-[#BFDBFE] rounded-xl p-3">
@@ -148,7 +177,7 @@ export default function FinancialReportPage() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: "Gross Revenue", value: formatINR(s.grossSales), icon: <ShoppingCart size={13} className="text-[#16A34A]" />, sub: `${s.totalOrders} orders` },
-          { label: "Ad Spend", value: formatINR(adSpend), icon: <TrendingUp size={13} className="text-[#F97316]" />, sub: m ? `ROAS ${m.roas}x` : "Not connected" },
+          { label: "Ad Spend", value: formatINR(adSpend), icon: <TrendingUp size={13} className="text-[#F97316]" />, sub: m && g ? `Meta ${m.roas}x · Google ${g.roas}x ROAS` : m ? `Meta ROAS ${m.roas}x` : g ? `Google ROAS ${g.roas}x` : "Not connected" },
           { label: "Net (after ads)", value: formatINR(netRevenue), icon: <DollarSign size={13} className={netRevenue >= 0 ? "text-[#22C55E]" : "text-[#EF4444]"} />, sub: adSpend > 0 ? `${Math.round((adSpend / s.grossSales) * 100)}% of revenue on ads` : "No ad data" },
           { label: "AOV", value: formatINR(s.aov), icon: <ShoppingCart size={13} className="text-[#A1A1AA]" />, sub: `${days} day period` },
         ].map(item => (
@@ -187,6 +216,7 @@ export default function FinancialReportPage() {
           <div className="space-y-2 mb-3">
             {[
               { label: "Meta Ads", revenue: metaRevenue, color: "#1877F2" },
+              ...(g ? [{ label: "Google Ads", revenue: googleRevenue, color: "#CA8A04" }] : []),
               { label: "Organic / Direct", revenue: organicRevenue, color: "#22C55E" },
             ].map(row => {
               const pct = s.grossSales > 0 ? Math.round((row.revenue / s.grossSales) * 100) : 0;

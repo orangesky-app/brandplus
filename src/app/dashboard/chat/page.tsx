@@ -1,6 +1,8 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import { Card } from "@/components/ui/card";
+import { useMounted } from "@/components/ui/period";
+import { formatDateSpan, toLocalYMD } from "@/lib/date-range-context";
 import { Brain, Send, Zap, ShoppingCart, AlertTriangle, TrendingUp, Package, Users } from "lucide-react";
 
 interface Message {
@@ -28,6 +30,9 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [aiActions, setAiActions] = useState<{ color: string; text: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mounted = useMounted();
+  const now = new Date();
+  const monthSoFar = mounted ? ` (${formatDateSpan(toLocalYMD(new Date(now.getFullYear(), now.getMonth(), 1)), toLocalYMD(now))})` : "";
 
   useEffect(() => {
     Promise.all([
@@ -53,7 +58,7 @@ export default function ChatPage() {
         const actions = [];
         if (codPct > 50) actions.push({ color: "bg-[#d94040]", text: `High COD rate: ${codPct}% of orders - consider prepaid incentive` });
         if (kpis.totalOrders > 0) actions.push({ color: "bg-[#17a773]", text: `${kpis.totalOrders} orders processed · ₹${kpis.grossSales.toLocaleString("en-IN")} revenue` });
-        if (kpis.newCustomers > 0) actions.push({ color: "bg-[#3478d4]", text: `${kpis.newCustomers} new customers acquired this period` });
+        if (kpis.newCustomers > 0) actions.push({ color: "bg-[#3478d4]", text: `${kpis.newCustomers} new customers so far this month` });
         if (kpis.returningCustomers > 0) actions.push({ color: "bg-[#17a773]", text: `${kpis.returningCustomers} returning customers - repeat purchase detected` });
         if (metaConnected) {
           actions.push({ color: "bg-[#1877F2]", text: "Meta Ads connected - campaign spend & CTR data available" });
@@ -109,9 +114,10 @@ export default function ChatPage() {
       <div className="mb-3">
         <h2 className="text-lg font-semibold">AI Assistant</h2>
         <p className="text-[17px] text-[#686864] mt-0.5">Ask anything · Shopify connected · {storeName}</p>
+        <p className="text-[14px] text-[#71717A] mt-0.5">Answers use your store&apos;s numbers for this month so far{monthSoFar}, and the last 28 days for ads and traffic</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
         {/* Chat */}
         <div className="flex flex-col bg-white border border-black/[0.09] rounded-xl overflow-hidden" style={{ height: 520 }}>
           {/* Chat header */}

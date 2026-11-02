@@ -11,8 +11,10 @@ export interface PlainCampaign {
   leads: number; clicks: number; impressions: number; frequency: number;
 }
 
+export interface PlainGoogleCampaign { name: string; spend: number; conversions: number; conversionValue: number }
+
 export interface PlainInput {
-  periodLabel: string;               // "today" | "yesterday" | "this month" | "last month" | "the last 7 days"
+  periodLabel: string;              // "today" | "yesterday" | "this month" | "last month" | "the last 7 days"
   storeHandle?: string;              // "my-store" (from my-store.myshopify.com) for admin links
   shop: {
     sales: number; orders: number; aov: number; codOrders: number;
@@ -22,7 +24,8 @@ export interface PlainInput {
   repeatRate?: number | null;        // % of customers who ordered again
   meta: { spend: number; purchaseValue: number; leads: number; clicks: number; impressions: number; frequency: number } | null;
   campaigns: PlainCampaign[];
-  gads: { spend: number; conversionValue: number } | null;
+  gads: { spend: number; conversionValue: number; conversions?: number; clicks?: number; impressions?: number } | null;
+  gadsCampaigns?: PlainGoogleCampaign[]; // running campaigns only: paused ones can't be acted on
   gsc: { avgPosition: number; nearPage1: number; extraClicks: number; pending: boolean } | null;
   connected: { meta: boolean; google: boolean };
   breakEvenRoas: number | null;      // from the saved cost model, if any
@@ -50,6 +53,8 @@ export interface PlainReport { summary: string; health: HealthTile[]; actions: P
 const ADS_MANAGER = "https://adsmanager.facebook.com/adsmanager/manage/campaigns";
 const EVENTS_MANAGER = "https://business.facebook.com/events_manager2";
 const GSC_PERF = "https://search.google.com/search-console/performance/search-analytics";
+const GADS_CAMPAIGNS = "https://ads.google.com/aw/campaigns";
+const GADS_CONVERSIONS = "https://ads.google.com/aw/conversions";
 const RESULT_OBJ = /SALES|CONVERSION|CATALOG|LEAD|MESSAGES/i;
 const SALES_OBJ = /SALES|CONVERSION|CATALOG/i;
 
@@ -90,12 +95,14 @@ export function buildPlainReport(i: PlainInput): PlainReport {
   const pixelBroken = salesSpend > 0 && salesValue === 0 && (s?.orders ?? 0) > 0;
   const totalLeads = i.meta?.leads ?? 0;
   const leadSpend = i.campaigns.filter(c => /LEAD|MESSAGES/i.test(c.objective)).reduce((t, c) => t + c.spend, 0);
+  const gConversions = i.gads?.conversions ?? 0;
+  const gCamps = i.gadsCampaigns ?? [];
 
   /* ── Health tiles ── */
   const health: HealthTile[] = [];
 
   if (!i.connected.meta && !i.gads) {
-    health.push({ area: "Ads", status: "off", headline: "Not connected", line: "Connect Meta to see if your ads make money." });
+    health.push({ area: "Ads", status: "off", headline: "Not connected", line: "Connect Meta or Google Ads to see if your ads make money." });
   } else if (pixelBroken) {
     health.push({ area: "Ads", status: "bad", headline: "Meta can't see your sales", line: `${formatINR(salesSpend)} spent, but no orders reported back. Fix the pixel first.` });
   } else if (adSpend === 0) {
@@ -111,6 +118,8 @@ export function buildPlainReport(i: PlainInput): PlainReport {
     });
   } else if (totalLeads > 0) {
     health.push({ area: "Ads", status: "good", headline: `${plural(totalLeads, "lead")} from ads`, line: `About ${formatINR(Math.round(leadSpend / totalLeads || adSpend / totalLeads))} per lead.` });
+  } else if (gConversions > 0) {
+    health.push({ area: "Ads", status: "warn", headline: `${plural(Math.round(gConversions), "conversion")} on Google`, line: "Google counted these but recorded no sale value, so we can't say if the ads paid off." });
   } else {
     health.push({ area: "Ads", status: "bad", headline: `${formatINR(adSpend)} spent, nothing back`, line: "No sales or leads tracked from your ads." });
   }
@@ -144,10 +153,13 @@ export function buildPlainReport(i: PlainInput): PlainReport {
     });
   }
 
-  if (!i.connected.google || !i.gsc) {
+  if (!i.connected.google) {
     health.push({ area: "Google", status: "off", headline: "Not connected", line: "Connect Google to see how people find you." });
+  } else if (!i.gsc) {
+    // This tile is about free search, so Google Ads or Analytics alone can't fill it.
+    health.push({ area: "Google", status: "off", headline: "Search not connected", line: "Connect Search Console to see how people find you on Google." });
   } else if (i.gsc.pending) {
-    health.push({ area: "Google", status: "off", headline: "Data still arriving", line: "Google shares search data 2–3 days late." });
+    health.push({ area: "Google", status: "off", headline: "Data still arriving", line: "Google shares search data 2-3 days late." });
   } else {
     const p = i.gsc.avgPosition;
     const st: Status = p > 0 && p <= 10 ? "good" : p <= 20 ? "warn" : "bad";
@@ -232,6 +244,77 @@ export function buildPlainReport(i: PlainInput): PlainReport {
         "Wait 3–4 days, check it still brings good returns, then repeat.",
       ],
       link: adsLink,
+    });
+  }
+
+  /* Google Ads. Skylitee only reads the account, so every step here is done in Google Ads itself. */
+  const gadsLink = { label: "Open Google Ads", href: GADS_CAMPAIGNS, external: true };
+
+  // Money going out with no conversions anywhere: suspect the tracking before the ads.
+  if (i.gads && i.gads.spend >= 500 && gConversions === 0) {
+    actions.push({
+      id: "google-tracking", source: "Google", impactKind: "save", impact: Math.round(i.gads.spend),
+      title: "Check that Google Ads can see your sales",
+      why: `You spent ${formatINR(i.gads.spend)} on Google Ads ${inP} and it recorded no sales or enquiries. Google can report a few hours late, but if this stays at 0 your tracking is probably off.`,
+      steps: [
+        "In Google Ads, open Goals → Conversions → Summary.",
+        "Check your purchase goal says Active, not Inactive or No recent conversions.",
+        "If it doesn't, set it up through the Google & YouTube app in Shopify.",
+        "Place a small test order and check it shows up within a day.",
+      ],
+      link: { label: "Open Google Ads conversions", href: GADS_CONVERSIONS, external: true },
+    });
+  }
+
+  // Only when the account is converting elsewhere, or the fault is tracking rather than the campaign.
+  const gDead = gConversions > 0 ? gCamps.filter(c => c.conversions === 0 && c.spend >= 300).sort((a, b) => b.spend - a.spend) : [];
+  if (gDead.length) {
+    const waste = Math.round(gDead.reduce((t, c) => t + c.spend, 0));
+    actions.push({
+      id: `google-dead:${key(gDead[0].name)}`, source: "Google", impactKind: "save", impact: waste,
+      title: gDead.length === 1 ? `Check "${gDead[0].name}" - it brought nothing back` : `Check ${gDead.length} Google campaigns that brought nothing back`,
+      why: `${gDead.length === 1 ? "It" : "Together they"} spent ${formatINR(waste)} ${inP} with no sales or enquiries, while your other Google campaigns did get some.`,
+      steps: [
+        "Open Google Ads → Campaigns.",
+        `Find "${gDead[0].name}"${gDead.length > 1 ? ` and the other ${gDead.length - 1}` : ""} and look at what people searched or where the ads ran.`,
+        "Pause it if nothing there looks like a buyer, and move the budget to your best campaign.",
+      ],
+      link: gadsLink,
+    });
+  }
+
+  const gLosing = gCamps.filter(c => c.conversionValue > 0 && c.conversionValue < c.spend).sort((a, b) => (b.spend - b.conversionValue) - (a.spend - a.conversionValue));
+  if (gLosing.length) {
+    const c = gLosing[0];
+    const loss = Math.round(gLosing.reduce((t, x) => t + (x.spend - x.conversionValue), 0));
+    actions.push({
+      id: `google-losing:${key(c.name)}`, source: "Google", impactKind: "save", impact: loss,
+      title: gLosing.length === 1 ? `Stop "${c.name}" losing money on Google` : `${gLosing.length} Google campaigns are losing money`,
+      why: `"${c.name}" got back ${per100(c.conversionValue / c.spend)} for every ₹100 spent - less than it cost.${gLosing.length > 1 ? ` Together these lost ${formatINR(loss)}.` : ""}`,
+      steps: [
+        "Open Skylitee's Google Ads Recommendations to see what's holding it back.",
+        `In Google Ads, open "${c.name}" and turn off the ads, keywords or products with no sales.`,
+        "If it stays below ₹100 back per ₹100 for another week, pause it.",
+      ],
+      link: { label: "See Google Ads recommendations", href: "/dashboard/gads/actions", external: false },
+    });
+  }
+
+  const gWinners = gCamps.filter(c => c.spend >= 1000 && c.conversionValue / c.spend >= Math.max(target * 1.3, 3))
+    .sort((a, b) => b.conversionValue / b.spend - a.conversionValue / a.spend);
+  if (gWinners.length) {
+    const w = gWinners[0];
+    const r = w.conversionValue / w.spend;
+    actions.push({
+      id: `google-scale:${key(w.name)}`, source: "Google", impactKind: "earn", impact: Math.round(w.spend * 0.2 * r),
+      title: `Give "${w.name}" 20% more budget on Google`,
+      why: `Every ₹100 here brought back ${per100(r)}. A bit more budget should bring more of the same.`,
+      steps: [
+        "Open Google Ads → Campaigns.",
+        `Raise the daily budget of "${w.name}" by 20%, not more, so Google's learning doesn't reset.`,
+        "Wait a week, check it still pays back, then repeat.",
+      ],
+      link: gadsLink,
     });
   }
 
@@ -365,6 +448,23 @@ export function buildPlainReport(i: PlainInput): PlainReport {
     sentence: `For every ₹100 you spent on ads, you got back ${per100(adRoas)} in sales. Healthy stores get ${per100(target)} or more${i.breakEvenRoas ? " at your costs" : ""}.`,
     flag: adRoas >= target ? "good" : "bad",
   });
+  // Both platforms running: the combined figure above can hide which one is pulling its weight.
+  if (i.gads && i.gads.spend > 0 && i.gads.conversionValue > 0 && (i.meta?.spend ?? 0) > 0) {
+    const gRoas = i.gads.conversionValue / i.gads.spend;
+    explained.push({
+      label: "Money back from Google Ads", value: `${per100(gRoas)} per ₹100`,
+      sentence: `Google's own tracking says every ₹100 on Google Ads brought back ${per100(gRoas)}. Healthy stores get ${per100(target)} or more.`,
+      flag: gRoas >= target ? "good" : "bad",
+    });
+  }
+  if (i.gads && i.gads.spend > 0 && gConversions > 0) {
+    const perConv = Math.round(i.gads.spend / gConversions);
+    explained.push({
+      label: "Cost per Google conversion", value: formatINR(perConv),
+      sentence: `Each sale or enquiry Google counted cost about ${formatINR(perConv)}.${s && s.aov > 0 ? ` Your average order is ${formatINR(s.aov)}.` : ""}`,
+      flag: s && s.aov > 0 ? (perConv <= s.aov * 0.4 ? "good" : perConv <= s.aov ? "warn" : "bad") : "info",
+    });
+  }
   if (s && s.newCustomers > 0 && adSpend > 0) {
     const cac = Math.round(adSpend / s.newCustomers);
     explained.push({

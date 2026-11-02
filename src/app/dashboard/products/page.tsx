@@ -9,7 +9,8 @@ import { BarRow } from "@/components/ui/bar-row";
 import { formatINR } from "@/lib/utils";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
 
 interface ProductRow {
   id: number; name: string; total: number; revenue: number; stock: number; price: number;
@@ -94,7 +95,7 @@ export default function ProductsPage() {
 
   function handleExportCSV() { exportToCSV("skylitee-products", buildSections()); }
   async function handleExportPDF() {
-    await exportToPDF("skylitee-products", "Product Analytics", `${range.label} · ${days} days · Shopify live data`, buildSections());
+    await exportToPDF("skylitee-products", "Product Analytics", `${rangeText(range)} · ${days} days · Shopify live data`, buildSections());
   }
 
   return (
@@ -102,7 +103,7 @@ export default function ProductsPage() {
       <div className="flex items-start justify-between mb-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2"><Package size={18} className="text-[#F97316]" /> Product Analytics</h2>
-          <p className="text-[17px] text-[#686864] mt-0.5">Shopify · live inventory & sales · {range.label}</p>
+          <p className="text-[17px] text-[#686864] mt-0.5">Shopify · live inventory & sales · <RangeText /></p>
         </div>
         <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} disabled={products.length === 0} />
       </div>
@@ -113,7 +114,7 @@ export default function ProductsPage() {
         <>
           {/* KPI row */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-3">
-            <KPICard label="Total Products" value={products.length.toString()} sub={`${withSales.length} sold in ${range.label.toLowerCase()}`} />
+            <KPICard label="Total Products" value={products.length.toString()} sub={`${withSales.length} sold in ${formatDateSpan(range.from, range.to)}`} />
             <KPICard label="Units Sold" value={(stats?.unitsSold ?? 0).toLocaleString("en-IN")} sub={`${formatINR(stats?.periodRevenue ?? 0)} revenue`} />
             <KPICard
               label="Best Seller"
@@ -143,9 +144,9 @@ export default function ProductsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
             {/* Revenue by product */}
             <Card>
-              <CardHeader title="Revenue by product" right={range.label} />
+              <CardHeader title="Revenue by product" right={rangeText(range)} />
               {withSales.length === 0 ? (
-                <div className="text-[17px] text-[#686864] py-6 text-center">No sales in {range.label.toLowerCase()}</div>
+                <div className="text-[17px] text-[#686864] py-6 text-center">No sales in {formatDateSpan(range.from, range.to)}</div>
               ) : (
                 <>
                   {withSales.slice(0, 8).map((p, i) => (
@@ -169,7 +170,7 @@ export default function ProductsPage() {
 
             {/* Inventory & demand forecast */}
             <Card>
-              <CardHeader title="Inventory & demand forecast" right={`Based on ${range.label.toLowerCase()}`} />
+              <CardHeader title="Inventory & demand forecast" right={`Based on ${formatDateSpan(range.from, range.to)}`} />
               <div className="overflow-x-auto">
                 <table className="w-full text-[17px] border-collapse">
                   <thead>
@@ -206,7 +207,7 @@ export default function ProductsPage() {
             <Card>
               <CardHeader title="Dead stock - capital locked" right={`${formatINR(stats?.deadStockValue ?? 0)} in ${stats?.deadStockCount ?? 0} products`} />
               {deadStock.length === 0 ? (
-                <div className="text-[17px] text-[#686864] py-6 text-center">No dead stock - everything moved in {range.label.toLowerCase()}.</div>
+                <div className="text-[17px] text-[#686864] py-6 text-center">No dead stock - everything moved in {formatDateSpan(range.from, range.to)}.</div>
               ) : (
                 <>
                   <div className="overflow-x-auto">

@@ -13,6 +13,7 @@ import { WarnBanner } from "@/components/ui/warn-banner";
 import { Tooltip } from "@/components/ui/tooltip";
 import { Donut } from "@/components/ui/charts";
 import { cn, formatINR, formatNumber } from "@/lib/utils";
+import { formatDateSpan, toLocalYMD } from "@/lib/date-range-context";
 import {
   COUNTRIES, getCountry, type Competitor, type AdsPayload, type AdStats, type CompetitorAd,
   type GoogleAd, type GoogleAdsPayload, type GoogleAdStats, type GoogleAdPlatform,
@@ -35,6 +36,7 @@ type StoreResp = { status: "ok"; data: StorePayload } | { status: "error"; messa
 
 interface OwnData {
   metrics: OwnMetrics;
+  period: string;                // the 30 days all of these cover, in real dates
   spend: number | null;          // ₹ last 30 days (Meta)
   roas: number | null;
   activeAds: number | null;
@@ -64,8 +66,8 @@ function numShort(n: number): string {
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return formatNumber(Math.round(n));
 }
-const rangeInr = (r: Range) => `${inrShort(r.lo)} – ${inrShort(r.hi)}`;
-const rangeX = (r: Range) => `${r.lo}x – ${r.hi}x`;
+const rangeInr = (r: Range) => `${inrShort(r.lo)} - ${inrShort(r.hi)}`;
+const rangeX = (r: Range) => `${r.lo}x - ${r.hi}x`;
 function ago(iso: string): string {
   const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
   return d <= 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
@@ -73,8 +75,7 @@ function ago(iso: string): string {
 function last30(): { from: string; to: string } {
   const to = new Date(Date.now() - 3 * 86_400_000); // GSC finalises with a ~3-day lag
   const from = new Date(to.getTime() - 29 * 86_400_000);
-  const f = (d: Date) => d.toISOString().slice(0, 10);
-  return { from: f(from), to: f(to) };
+  return { from: toLocalYMD(from), to: toLocalYMD(to) };
 }
 
 const SUB = "text-[15px] text-[#71717A] dark:text-[#A1A1AA]";
@@ -185,6 +186,7 @@ export default function CompetitorIntelPage() {
       if (active && formats) for (const a of active) formats[a.format] = (formats[a.format] ?? 0) + 1;
       const k = meta?.kpis;
       setOwn({
+        period: formatDateSpan(from, to),
         metrics: {
           cpm: inr && k?.cpm ? k.cpm : null,
           ctr: k ? (k.outboundCtr && k.outboundCtr > 0 ? k.outboundCtr : k.ctr || null) : null,
@@ -867,7 +869,7 @@ function TrafficTab({ competitor, resp, loading, own, countryCode, gads, onRefre
         <KPICard label="Organic visits / mo" value={numShort(ov.organicTraffic)} sub={`${formatNumber(ov.organicKeywords)} keywords · estimate`} icon={<Search size={12} />} />
         {gEst && gVisits ? (
           <>
-            <KPICard label="Google-ad visits / mo" value={`${numShort(gVisits.lo)} – ${numShort(gVisits.hi)}`}
+            <KPICard label="Google-ad visits / mo" value={`${numShort(gVisits.lo)} - ${numShort(gVisits.hi)}`}
               sub={`spend ÷ ₹${gCpc}/click · ${gEst.confidence} confidence`} icon={<Megaphone size={12} />} />
             <KPICard label="Google-ad spend / mo" value={rangeInr(gEst.range)}
               sub={`from ${gEst.liveAds} live Google ads · ${gEst.confidence} confidence`} icon={<Target size={12} />} />
@@ -932,7 +934,7 @@ function TrafficTab({ competitor, resp, loading, own, countryCode, gads, onRefre
             </tbody>
           </table>
           <p className="text-[13px] text-[#A1A1AA] mt-2">
-            Your numbers are last 30 days from Search Console &amp; GA4{!ownComparable && " (shown for India only)"}.
+            Your numbers are {own?.period ?? "the last 30 days"} from Search Console &amp; GA4{!ownComparable && " (shown for India only)"}.
           </p>
         </Card>
       </div>
@@ -1189,7 +1191,7 @@ function CompareTab({ competitors, own, country }: {
     },
     // Store & sales
     {
-      key: "revenue", group: "Store & sales", label: "Revenue / month", hint: "Yours: Shopify last 30 days · theirs: estimate", better: "higher",
+      key: "revenue", group: "Store & sales", label: "Revenue / month", hint: `Yours: Shopify ${own?.period ?? "last 30 days"} · theirs: estimate`, better: "higher",
       you: inrCell(own?.revenue),
       them: (d, e) => (spendRowLoading(d) ? "loading" : estCell(e?.revenue, rangeInr)),
       fix: { behind: "They sell more - study their long-running ads (proven angles) and their bestseller prices below.", ahead: "You're out-selling them on these estimates." },
@@ -1243,7 +1245,7 @@ function CompareTab({ competitors, own, country }: {
   return (
     <div>
       <WarnBanner type="blue">
-        <b>You</b> = your real numbers (last 30 days from Shopify, Meta, Google Ads &amp; Search Console). <b>Competitors</b> = estimates from their live ads, Google traffic and public store (marked ~).
+        <b>You</b> = your real numbers ({own?.period ?? "last 30 days"} from Shopify, Meta, Google Ads &amp; Search Console). <b>Competitors</b> = estimates from their live ads, Google traffic and public store (marked ~).
         Green = you&apos;re ahead of the competitor average, red = behind. Ad spend is never colour-coded - spending more isn&apos;t better by itself.
       </WarnBanner>
 

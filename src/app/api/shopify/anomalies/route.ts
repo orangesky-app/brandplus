@@ -9,10 +9,11 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ error: "not_connected" }, { status: 401 });
   const { shop, token } = session;
 
-  const now = new Date();
-  const days = now.getDate();
-  // Month-to-date in the store's timezone.
-  const { startISO } = await resolveShopifyPeriod(shop, token, null, null);
+  // Month-to-date in the store's timezone, including the day count: the server's own clock
+  // is UTC and can still be on the previous day for an Indian store.
+  const { startISO, startYmd, endYmd, days } = await resolveShopifyPeriod(shop, token, null, null);
+  const [startY, startM] = startYmd.split("-").map(Number);
+  const daysInMonth = new Date(startY, startM, 0).getDate();
 
   const [orders, products, customers] = await Promise.all([
     fetchOrdersInRange(shop, token, startISO),
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
   const codOrders = orders.filter(o => isCodGateway(o.payment_gateway)).length;
   const codPct = totalOrders ? Math.round((codOrders / totalOrders) * 100) : 0;
   const dailyAvg = days > 0 ? grossSales / days : 0;
-  const projectedMonthly = Math.round(dailyAvg * 30);
+  const projectedMonthly = Math.round(dailyAvg * daysInMonth);
 
   // Sales map
   const salesMap: Record<number, number> = {};
@@ -113,6 +114,7 @@ export async function GET(req: NextRequest) {
     critical,
     warnings,
     positive,
+    period: { from: startYmd, to: endYmd },
     summary: { totalOrders, codPct, repeatRate, projectedMonthly, days, grossSales: Math.round(grossSales) },
   });
 }

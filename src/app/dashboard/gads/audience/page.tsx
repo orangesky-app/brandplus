@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { Users } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Tooltip } from "@/components/ui/tooltip";
+import { formatDateSpan } from "@/lib/date-range-context";
 import {
   DiagPanel, EmptyNote, GadsGate, GadsHeader, GoogleCountNote, Judged, Pills, PartialNotice, useGadsSection,
 } from "@/components/gads/shared";
@@ -155,7 +156,7 @@ export default function GadsAudiencePage() {
       <GadsHeader
         icon={Users}
         title="Audience & Timing"
-        subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}` : "Devices, networks, age, gender, locations and hours"}
+        subtitle={state.data ? `${state.data.account} · ${formatDateSpan(state.data.period.from, state.data.period.to)}` : "Devices, networks, age, gender, locations and hours"}
       />
       <GoogleCountNote />
       <GadsGate state={state}>{d => <AudienceView d={d} />}</GadsGate>

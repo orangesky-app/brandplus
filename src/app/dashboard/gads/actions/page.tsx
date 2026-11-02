@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import { ListChecks } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
+import { formatDateSpan } from "@/lib/date-range-context";
 import {
   BenchmarkNote, DiagPanel, EmptyNote, GadsGate, GadsHeader, GoogleCountNote, Pills, useGadsSection,
 } from "@/components/gads/shared";
@@ -95,7 +96,7 @@ export default function GadsActionsPage() {
       <GadsHeader
         icon={ListChecks}
         title="Recommendations"
-        subtitle={overview.data ? `${overview.data.account} · ${overview.data.period.from} to ${overview.data.period.to}` : "Everything to fix or scale, ranked by money at stake"}
+        subtitle={overview.data ? `${overview.data.account} · ${formatDateSpan(overview.data.period.from, overview.data.period.to)}` : "Everything to fix or scale, ranked by money at stake"}
       />
       <GoogleCountNote mixed />
       <GadsGate state={overview}>{d => <Actions overview={d} extra={extra} missing={missing} />}</GadsGate>

@@ -3,8 +3,10 @@ import { useEffect, useState } from "react";
 import { KPICard } from "@/components/ui/kpi-card";
 import { Card, CardHeader } from "@/components/ui/card";
 import { formatINR, cn } from "@/lib/utils";
-import { useDateRange } from "@/lib/date-range-context";
-import { Share2, TrendingUp, Target, ArrowRight } from "lucide-react";
+import { useDateRange, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
+import { fetchGoogleAds, gadsIssueText, type GadsData, type GadsIssue } from "@/lib/gads-client";
+import { Share2, TrendingUp, Target, ArrowRight, Megaphone } from "lucide-react";
 import Link from "next/link";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF, ExportSection } from "@/lib/export";
@@ -41,31 +43,40 @@ export default function AttributionPage() {
   const [metaOk, setMetaOk] = useState(false);
   const [ga4Ok, setGa4Ok] = useState(false);
   const [shopOk, setShopOk] = useState(false);
+  const [gads, setGads] = useState<GadsData | null>(null);
+  const [gadsIssue, setGadsIssue] = useState<GadsIssue | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let stale = false;
     setLoading(true);
+    setMeta(null); setGa4(null); setSales(null); setGads(null); setGadsIssue(null);
+    setMetaOk(false); setGa4Ok(false); setShopOk(false);
     Promise.allSettled([
       fetch(`/api/meta?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/ga4?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/shopify/sales?from=${range.from}&to=${range.to}`).then(r => r.json()),
-    ]).then(([mR, gR, sR]) => {
+      fetchGoogleAds(range.from, range.to),
+    ]).then(([mR, gR, sR, adsR]) => {
+      if (stale) return;
       if (mR.status === "fulfilled" && !mR.value?.error) { setMeta({ kpis: mR.value.kpis, campaigns: mR.value.campaigns ?? [] }); setMetaOk(true); }
       if (gR.status === "fulfilled" && !gR.value?.error) { setGa4({ kpis: gR.value.kpis, channels: gR.value.channels ?? [], ecommerce: gR.value.ecommerce ?? null }); setGa4Ok(true); }
       if (sR.status === "fulfilled" && !sR.value?.error) { setSales(sR.value); setShopOk(true); }
-    }).finally(() => setLoading(false));
+      if (adsR.status === "fulfilled") { setGads(adsR.value.data); setGadsIssue(adsR.value.issue); }
+    }).finally(() => { if (!stale) setLoading(false); });
+    return () => { stale = true; };
   }, [range.from, range.to]);
 
   if (loading) return <div className="flex items-center justify-center py-24 text-[15px] text-[#A1A1AA]">Loading attribution data…</div>;
 
-  if (!metaOk && !ga4Ok) {
+  if (!metaOk && !ga4Ok && !gads) {
     return (
       <div className="text-center py-16">
         <div className="w-12 h-12 bg-[#F5F5F4] dark:bg-[#1C1C1C] rounded-2xl flex items-center justify-center mx-auto mb-3">
           <Target size={20} className="text-[#A1A1AA]" />
         </div>
         <p className="text-[16px] font-semibold text-[#71717A] mb-1">Connect a platform to see attribution</p>
-        <p className="text-[15px] text-[#A1A1AA] max-w-sm mx-auto mb-4">Attribution uses Meta Ads + GA4 + Shopify to show which channels drive your revenue.</p>
+        <p className="text-[15px] text-[#A1A1AA] max-w-sm mx-auto mb-4">{gadsIssue ? gadsIssueText(gadsIssue) : "Attribution uses Meta Ads + Google Ads + GA4 + Shopify to show which channels drive your revenue."}</p>
         <Link href="/dashboard/connections" className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#F97316] text-white rounded-xl text-[15px] font-bold hover:bg-[#EA580C] transition-colors">
           Connect Platforms <ArrowRight size={13} />
         </Link>
@@ -76,11 +87,17 @@ export default function AttributionPage() {
   /* ── Derived ── */
   const totalRevenue = sales?.kpis.grossSales ?? 0;
   const metaRevenue  = meta?.kpis.purchaseValue ?? 0;
-  const organicRevenue = Math.max(0, totalRevenue - metaRevenue);
+  const g = gads?.kpis;
+  const googleRevenue = g?.conversionValue ?? 0;
+  const organicRevenue = Math.max(0, totalRevenue - metaRevenue - googleRevenue);
   const metaPct    = totalRevenue > 0 ? Math.round(metaRevenue / totalRevenue * 100) : 0;
-  const organicPct = 100 - metaPct;
+  const googlePct  = totalRevenue > 0 ? Math.round(googleRevenue / totalRevenue * 100) : 0;
+  const organicPct = Math.max(0, 100 - metaPct - googlePct);
   const metaOrders = meta?.kpis.purchases ?? 0;
+  const googleConversions = Math.round(g?.conversions ?? 0);
   const shopOrders = sales?.kpis.totalOrders ?? 0;
+  const adSpendAll = (meta?.kpis.spend ?? 0) + (g?.spend ?? 0);
+  const roasAll = adSpendAll > 0 ? +((metaRevenue + googleRevenue) / adSpendAll).toFixed(2) : 0;
 
   const ga4Channels = [...(ga4?.channels ?? [])].sort((a, b) => b.revenue - a.revenue || b.sessions - a.sessions);
   const totalGa4Rev = ga4Channels.reduce((s, c) => s + c.revenue, 0);
@@ -108,6 +125,24 @@ export default function AttributionPage() {
         });
       }
     }
+    if (gads && g) {
+      sections.push({
+        title: "Google Ads Attribution",
+        headers: ["Metric", "Value"],
+        rows: [
+          ["Ad Spend", formatINR(g.spend)], ["ROAS", `${g.roas}x`],
+          ["Conversions", googleConversions], ["Conversion Value", formatINR(g.conversionValue)],
+          ["Clicks", g.clicks], ["CTR", `${g.ctr}%`], ["Avg CPC", formatINR(g.avgCpc)],
+        ],
+      });
+      if (gads.campaigns.length > 0) {
+        sections.push({
+          title: "Google Ads Campaigns",
+          headers: ["Campaign", "Spend", "Conversions", "Value", "ROAS", "CTR"],
+          rows: gads.campaigns.map(c => [c.name, formatINR(c.spend), Math.round(c.conversions), formatINR(c.conversionValue), `${c.roas}x`, `${c.ctr}%`]),
+        });
+      }
+    }
     if (ga4 && ga4.channels.length > 0) {
       sections.push({
         title: "GA4 Channel Attribution",
@@ -119,7 +154,7 @@ export default function AttributionPage() {
   }
   function handleExportCSV() { exportToCSV(`skylitee-attribution-${range.from}`, buildSections()); }
   async function handleExportPDF() {
-    await exportToPDF(`skylitee-attribution-${range.from}`, "Attribution Report", range.label, buildSections());
+    await exportToPDF(`skylitee-attribution-${range.from}`, "Attribution Report", rangeText(range), buildSections());
   }
 
   return (
@@ -130,22 +165,29 @@ export default function AttributionPage() {
         <div>
           <h2 className="text-lg font-bold text-[#18181B] dark:text-[#F4F4F5] flex items-center gap-2"><Share2 size={18} className="text-[#F97316]" /> Channel Attribution</h2>
           <p className="text-[14px] text-[#A1A1AA] mt-0.5">
-            {range.label} · Last-click model · {[metaOk && "Meta", ga4Ok && "GA4", shopOk && "Shopify"].filter(Boolean).join(" + ")}
+            <RangeText /> · Last-click model · {[metaOk && "Meta", gads && "Google Ads", ga4Ok && "GA4", shopOk && "Shopify"].filter(Boolean).join(" + ")}
           </p>
         </div>
         <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} />
       </div>
 
+      {gadsIssue && (
+        <div className="text-[14px] text-[#92400E] dark:text-[#FCD34D] bg-[#FFFBEB] dark:bg-[#2D1C00] border border-[#FCD34D] rounded-xl px-3 py-2">
+          Google Ads isn&apos;t in these numbers, so organic may look higher than it is. {gadsIssueText(gadsIssue)}
+        </div>
+      )}
+
       {/* KPIs */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
         <KPICard label="Total Revenue" value={shopOk ? formatINR(totalRevenue) : "-"} />
         <KPICard label="Meta Revenue" value={metaOk ? formatINR(metaRevenue) : "-"} sub={metaOk ? `${metaPct}% of total` : "Connect Meta"} />
+        <KPICard label="Google Ads Revenue" value={g ? formatINR(googleRevenue) : "-"} sub={g ? `${googlePct}% of total` : "Connect Google Ads"} />
         <KPICard label="Organic Revenue" value={shopOk ? formatINR(organicRevenue) : "-"} sub={shopOk ? `${organicPct}% of total` : "-"} />
-        <KPICard label="ROAS"
-          value={metaOk ? `${meta!.kpis.roas}x` : "-"}
-          change={meta ? (meta.kpis.roas >= 2 ? 1 : -1) : undefined}
-          changeLabel={meta ? (meta.kpis.roas >= 3 ? "Strong" : meta.kpis.roas >= 2 ? "Average" : "Below target") : undefined} />
-        <KPICard label="Meta Spend" value={metaOk ? formatINR(meta!.kpis.spend) : "-"} sub={metaOk ? `CAC ${formatINR(meta!.kpis.cac)}` : "Connect Meta"} />
+        <KPICard label={metaOk && g ? "ROAS (all ads)" : "ROAS"}
+          value={adSpendAll > 0 ? `${roasAll}x` : "-"}
+          change={adSpendAll > 0 ? (roasAll >= 2 ? 1 : -1) : undefined}
+          changeLabel={adSpendAll > 0 ? (roasAll >= 3 ? "Strong" : roasAll >= 2 ? "Average" : "Below target") : undefined} />
+        <KPICard label="Ad Spend" value={metaOk || g ? formatINR(adSpendAll) : "-"} sub={metaOk && g ? `Meta ${formatINR(meta!.kpis.spend)} · Google ${formatINR(g.spend)}` : metaOk ? `CAC ${formatINR(meta!.kpis.cac)}` : g ? "Google Ads" : "Connect Meta or Google Ads"} />
       </div>
 
       {/* GA4 Channel Breakdown + Paid vs Organic */}
@@ -243,6 +285,22 @@ export default function AttributionPage() {
               )}
             </div>
 
+            {g && (
+              <div className="rounded-2xl p-3.5 bg-[#FEFCE8] dark:bg-[#2D1C00] border border-[#FDE68A] dark:border-[#713F12]">
+                <div className="flex items-center gap-2 mb-2">
+                  <Megaphone size={12} className="text-[#A16207]" />
+                  <span className="text-[13px] font-bold text-[#A16207] dark:text-[#FCD34D]">Google Ads</span>
+                  <span className="ml-auto text-[15px] font-black text-[#A16207] dark:text-[#FCD34D]">{googlePct}%</span>
+                </div>
+                <div className="text-[20px] font-black text-[#18181B] dark:text-[#F4F4F5]">{formatINR(googleRevenue)}</div>
+                <div className="mt-1.5 space-y-0.5">
+                  <div className="text-[13px] text-[#A1A1AA]">Spend: <span className="font-semibold text-[#18181B] dark:text-[#F4F4F5]">{formatINR(g.spend)}</span></div>
+                  {googleRevenue > 0 && <div className="text-[13px] text-[#A1A1AA]">ROAS: <span className={cn("font-black", g.roas >= 3 ? "text-[#22C55E]" : g.roas >= 2 ? "text-[#EAB308]" : "text-[#EF4444]")}>{g.roas}x</span></div>}
+                  <div className="text-[13px] text-[#A1A1AA]">Conversions: <span className="font-semibold text-[#18181B] dark:text-[#F4F4F5]">{googleConversions}</span></div>
+                </div>
+              </div>
+            )}
+
             <div className="rounded-2xl p-3.5 bg-[#F0FDF4] dark:bg-[#052E16] border border-[#BBF7D0] dark:border-[#166534]">
               <div className="flex items-center gap-2 mb-2">
                 <TrendingUp size={12} className="text-[#22C55E]" />
@@ -252,19 +310,21 @@ export default function AttributionPage() {
               <div className="text-[20px] font-black text-[#18181B] dark:text-[#F4F4F5]">{shopOk ? formatINR(organicRevenue) : "-"}</div>
               {shopOk && (
                 <div className="mt-1.5">
-                  <div className="text-[13px] text-[#A1A1AA]">Est. orders: <span className="font-semibold text-[#18181B] dark:text-[#F4F4F5]">{Math.max(0, shopOrders - metaOrders)}</span></div>
+                  <div className="text-[13px] text-[#A1A1AA]">Est. orders: <span className="font-semibold text-[#18181B] dark:text-[#F4F4F5]">{Math.max(0, shopOrders - metaOrders - googleConversions)}</span></div>
                 </div>
               )}
             </div>
 
-            {(metaOk || shopOk) && (
+            {(metaOk || g || shopOk) && (
               <div>
                 <div className="flex h-2 rounded-full overflow-hidden">
                   <div className="bg-[#1877F2]" style={{ width: `${metaPct}%` }} />
+                  {g && <div className="bg-[#EAB308]" style={{ width: `${googlePct}%` }} />}
                   <div className="bg-[#22C55E] flex-1" />
                 </div>
-                <div className="flex justify-between mt-1.5">
-                  <span className="text-[12px] text-[#A1A1AA] flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#1877F2]" />Paid {metaPct}%</span>
+                <div className="flex justify-between gap-2 mt-1.5">
+                  <span className="text-[12px] text-[#A1A1AA] flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#1877F2]" />Meta {metaPct}%</span>
+                  {g && <span className="text-[12px] text-[#A1A1AA] flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#EAB308]" />Google {googlePct}%</span>}
                   <span className="text-[12px] text-[#A1A1AA] flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#22C55E]" />Organic {organicPct}%</span>
                 </div>
               </div>
@@ -343,7 +403,7 @@ export default function AttributionPage() {
 
         {metaOk && (
           <Card>
-            <CardHeader title="Campaign Attribution" right={<span className="text-[13px] text-[#A1A1AA]">{meta!.campaigns.length} campaigns</span>} />
+            <CardHeader title="Meta Campaign Attribution" right={<span className="text-[13px] text-[#A1A1AA]">{meta!.campaigns.length} campaigns</span>} />
             <table className="w-full text-[14px] mt-2">
               <thead>
                 <tr className="border-b border-black/[0.06] dark:border-white/[0.06]">
@@ -369,6 +429,39 @@ export default function AttributionPage() {
                         c.roas >= 3 ? "text-[#22C55E]" : c.roas >= 2 ? "text-[#EAB308]" : "text-[#EF4444]")}>
                         {c.roas}x
                       </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        )}
+
+        {gads && gads.campaigns.length > 0 && (
+          <Card>
+            <CardHeader title="Google Ads Campaign Attribution" right={<span className="text-[13px] text-[#A1A1AA]">{gads.campaigns.length} campaigns</span>} />
+            <table className="w-full text-[14px] mt-2">
+              <thead>
+                <tr className="border-b border-black/[0.06] dark:border-white/[0.06]">
+                  {["Campaign", "Spend", "Conversions", "Value", "ROAS"].map(h => (
+                    <th key={h} className="text-left py-1.5 px-1 text-[13px] font-bold text-[#A1A1AA] uppercase">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {gads.campaigns.slice(0, 8).map(c => (
+                  <tr key={c.id} className="border-b border-black/[0.04] dark:border-white/[0.04] last:border-0 hover:bg-[#F5F5F4] dark:hover:bg-[#1C1C1C] transition-colors">
+                    <td className="py-2 px-1 max-w-[160px]">
+                      <div className="truncate font-medium text-[#18181B] dark:text-[#F4F4F5]">{c.name}</div>
+                      <div className="text-[12px] text-[#A1A1AA] capitalize">{c.status.toLowerCase()} · {c.clicks.toLocaleString("en-IN")} clicks</div>
+                    </td>
+                    <td className="py-2 px-1 text-[#A1A1AA]">{formatINR(c.spend)}</td>
+                    <td className="py-2 px-1 font-semibold text-[#18181B] dark:text-[#F4F4F5]">{Math.round(c.conversions)}</td>
+                    <td className="py-2 px-1 font-semibold text-[#F97316]">{formatINR(c.conversionValue)}</td>
+                    <td className="py-2 px-1">
+                      {c.conversionValue > 0
+                        ? <span className={cn("font-black text-[15px]", c.roas >= 3 ? "text-[#22C55E]" : c.roas >= 2 ? "text-[#EAB308]" : "text-[#EF4444]")}>{c.roas}x</span>
+                        : <span className="text-[#A1A1AA]">-</span>}
                     </td>
                   </tr>
                 ))}

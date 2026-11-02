@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeText, formatDateSpan } from "@/lib/date-range-context";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
@@ -64,7 +64,7 @@ export default function TrafficReportPage() {
       { title: "Traffic KPIs", headers: ["Metric", "Value"], rows: [
         ["Sessions", k.sessions], ["Users", k.users], ["Pageviews", k.pageviews],
         ["New Users", k.newUsers], ["Bounce Rate", `${k.bounceRate}%`], ["Avg Session Duration", k.avgSessionMin],
-        ["Period", `${data.period.startDate} → ${data.period.endDate}`],
+        ["Period", formatDateSpan(data.period.startDate, data.period.endDate)],
       ]},
       { title: "Traffic Channels", headers: ["Channel", "Sessions", "Users", "Purchases", "Revenue"], rows:
         data.channels.map(c => [c.channel, c.sessions, c.users, c.purchases, `Rs.${c.revenue.toFixed(0)}`])
@@ -136,11 +136,11 @@ export default function TrafficReportPage() {
             <div className="w-7 h-7 bg-[#22C55E] rounded-lg flex items-center justify-center"><Globe size={14} className="text-white" /></div>
             <h1 className="text-xl font-bold text-[#18181B] dark:text-[#F4F4F5]">Traffic Report</h1>
           </div>
-          <p className="text-[14px] text-[#A1A1AA] ml-9">{data.property} · {range.label} · Generated {generatedAt}</p>
+          <p className="text-[14px] text-[#A1A1AA] ml-9">{data.property} · {rangeText(range)} · Generated {generatedAt}</p>
         </div>
         <ExportButton
           onExportCSV={() => exportToCSV(`skylitee-traffic-report-${range.from}`, buildSections())}
-          onExportPDF={() => exportToPDF(`skylitee-traffic-report-${range.from}`, "Traffic Report", `${data.property} · ${range.label}`, buildSections())}
+          onExportPDF={() => exportToPDF(`skylitee-traffic-report-${range.from}`, "Traffic Report", `${data.property} · ${rangeText(range)}`, buildSections())}
         />
       </div>
 

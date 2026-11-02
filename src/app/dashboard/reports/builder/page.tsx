@@ -11,7 +11,7 @@ import {
   ReportCtx, ReportSource, ReportItem,
 } from "@/lib/report-blocks";
 import { exportToPDF } from "@/lib/export";
-import { getPresetRange, DatePreset } from "@/lib/date-range-context";
+import { getPresetRange, formatDateSpan, DatePreset } from "@/lib/date-range-context";
 
 interface Branding { brandName: string; color: string; clientName: string; logoDataUrl: string; reportTitle: string }
 interface Template { id: string; name: string; blocks: string[]; branding: Partial<Branding> }
@@ -80,7 +80,9 @@ export default function ReportBuilderPage() {
   function resolveRange() {
     if (preset === "custom") {
       if (!customFrom || !customTo) return null;
-      return { from: customFrom, to: customTo, label: "Custom" };
+      // Picked back to front, the APIs would return nothing, so put them in order.
+      const [from, to] = customFrom <= customTo ? [customFrom, customTo] : [customTo, customFrom];
+      return { from, to, label: "Custom dates" };
     }
     return getPresetRange(preset);
   }
@@ -118,7 +120,7 @@ export default function ReportBuilderPage() {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               shopify: ctx.shopify ?? null, meta: ctx.meta ?? null,
-              gsc: ctx.gsc ?? null, ga4: ctx.ga4 ?? null,
+              gsc: ctx.gsc ?? null, ga4: ctx.ga4 ?? null, gads: ctx.gads ?? null,
               period: { from: range.from, to: range.to },
             }),
           });
@@ -134,7 +136,7 @@ export default function ReportBuilderPage() {
       }
 
       const title = branding.reportTitle.trim() || "Performance Report";
-      const subtitle = `${branding.clientName ? branding.clientName + " · " : ""}${range.label} (${range.from} → ${range.to})`;
+      const subtitle = `${branding.clientName ? branding.clientName + " · " : ""}${range.label} (${formatDateSpan(range.from, range.to)})`;
       const fileBase = `${title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${range.from}`;
       await exportToPDF(fileBase, title, subtitle, sections, {
         brandName: branding.brandName, color: branding.color, logoDataUrl: branding.logoDataUrl || undefined,

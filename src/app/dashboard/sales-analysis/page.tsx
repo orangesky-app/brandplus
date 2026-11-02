@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { formatINR } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
+import { fetchGoogleAds, gadsIssueText } from "@/lib/gads-client";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF, ExportSection } from "@/lib/export";
 import { Donut } from "@/components/ui/charts";
@@ -49,6 +51,7 @@ export default function SalesAnalysisPage() {
   const [shopDaily, setShopDaily] = useState<ShopDaily[]>([]);
   const [metaDaily, setMetaDaily] = useState<MetaDaily[]>([]);
   const [gadsDaily, setGadsDaily] = useState<GadsDaily[]>([]);
+  const [gadsIssue, setGadsIssue] = useState<string | null>(null);
   const [metaKpis, setMetaKpis] = useState<MetaKpis | null>(null);
   const [gadsKpis, setGadsKpis] = useState<{ spend: number; roas: number; conversions: number; conversionValue: number; ctr: number; avgCpc: number } | null>(null);
   const [campaigns, setCampaigns] = useState<MetaCampaign[]>([]);
@@ -62,11 +65,14 @@ export default function SalesAnalysisPage() {
     Promise.allSettled([
       fetch(`/api/shopify/dashboard?from=${range.from}&to=${range.to}`).then(r => r.json()),
       fetch(`/api/meta?from=${range.from}&to=${range.to}`).then(r => r.json()),
-      fetch(`/api/google/ads?from=${range.from}&to=${range.to}`).then(r => r.json()),
+      fetchGoogleAds(range.from, range.to),
     ]).then(([shopR, metaR, gadsR]) => {
       if (shopR.status === "fulfilled" && !shopR.value?.error) { setShopDaily(shopR.value.dailyRevenue ?? []); setStoreAov(shopR.value.kpis?.aov ?? 0); }
       if (metaR.status === "fulfilled" && !metaR.value?.error) { setMetaDaily(metaR.value.daily ?? []); setMetaKpis(metaR.value.kpis ?? null); setCampaigns(metaR.value.campaigns ?? []); }
-      if (gadsR.status === "fulfilled" && !gadsR.value?.error) { setGadsDaily(gadsR.value.daily ?? []); setGadsKpis(gadsR.value.kpis ?? null); }
+      const google = gadsR.status === "fulfilled" ? gadsR.value : null;
+      setGadsDaily(google?.data?.daily ?? []);
+      setGadsKpis(google?.data?.kpis ?? null);
+      setGadsIssue(gadsIssueText(google?.issue ?? null));
     }).finally(() => setLoading(false));
   }, [range.from, range.to]);
 
@@ -133,7 +139,7 @@ export default function SalesAnalysisPage() {
   function buildSections(): ExportSection[] {
     const head = ["Period", "Spend", "Sales", "ROAS", "Orders", "AOV"];
     return [{
-      title: `Sales Analysis - ${SOURCES.find(s => s.id === source)!.label} · ${freq} · ${range.label}`,
+      title: `Sales Analysis - ${SOURCES.find(s => s.id === source)!.label} · ${freq} · ${rangeText(range)}`,
       headers: head,
       rows: [
         ...buckets.map(b => [b.label, source === "organic" ? "-" : formatINR(Math.round(b.spend)), formatINR(Math.round(b.sales)), source === "organic" ? "-" : roas(b.sales, b.spend), String(b.orders), aov(b.sales, b.orders)]),
@@ -149,9 +155,9 @@ export default function SalesAnalysisPage() {
       <div className="flex items-start justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-bold text-[#18181B] dark:text-[#F4F4F5] flex items-center gap-2"><BarChart3 size={18} className="text-[#F97316]" /> Sales Analysis</h2>
-          <p className="text-[15px] text-[#A1A1AA] mt-0.5">Store vs Meta vs Google vs Organic · by day / week / month · {range.label}</p>
+          <p className="text-[15px] text-[#A1A1AA] mt-0.5">Store vs Meta vs Google vs Organic · by day / week / month · <RangeText /></p>
         </div>
-        <ExportButton onExportCSV={() => exportToCSV("skylitee-sales-analysis", buildSections())} onExportPDF={() => exportToPDF("skylitee-sales-analysis", "Sales Analysis", `${range.label}`, buildSections())} disabled={loading || buckets.length === 0} />
+        <ExportButton onExportCSV={() => exportToCSV("skylitee-sales-analysis", buildSections())} onExportPDF={() => exportToPDF("skylitee-sales-analysis", "Sales Analysis", rangeText(range), buildSections())} disabled={loading || buckets.length === 0} />
       </div>
 
       {/* Controls */}
@@ -252,10 +258,10 @@ export default function SalesAnalysisPage() {
             {/* Google */}
             <Card>
               <CardHeader title="Google Ads" />
-              {!gadsKpis ? <div className="py-6 text-center text-[15px] text-[#A1A1AA]">Not connected / pending approval</div> : (
+              {!gadsKpis ? <div className="py-6 text-center text-[15px] text-[#A1A1AA]">{gadsIssue ?? "Not connected yet"}</div> : (
                 <div className="grid grid-cols-3 gap-2">
                   <Kpi label="Spend" value={formatINR(gadsKpis.spend)} />
-                  <Kpi label="Sales" value={formatINR(gadsKpis.conversionValue)} />
+                  <Kpi label="Conv. value" value={formatINR(gadsKpis.conversionValue)} />
                   <Kpi label="ROAS" value={`${gadsKpis.roas}×`} tone="accent" />
                   <Kpi label="Conv." value={String(gadsKpis.conversions)} />
                   <Kpi label="CTR" value={`${gadsKpis.ctr}%`} />

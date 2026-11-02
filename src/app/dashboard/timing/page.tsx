@@ -2,7 +2,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { NotConnected } from "@/components/ui/not-connected";
 import { Card, CardHeader } from "@/components/ui/card";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
 import { formatINR } from "@/lib/utils";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -173,7 +174,7 @@ export default function TimingPage() {
     await exportToPDF(
       `skylitee-timing-${range.from}`,
       "Ad Timing Analysis",
-      `${data?.adAccountName ?? "Meta Ads"} · ${range.from} → ${range.to}`,
+      `${data?.adAccountName ?? "Meta Ads"} · ${formatDateSpan(range.from, range.to)}`,
       buildSections()
     );
   }
@@ -196,7 +197,7 @@ export default function TimingPage() {
       <div className="flex items-start justify-between mb-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2"><Clock size={18} className="text-[#F97316]" /> Time Intelligence</h2>
-          <p className="text-[17px] text-[#686864] mt-0.5">Best hours &amp; days to run ads · based on your conversion data</p>
+          <p className="text-[17px] text-[#686864] mt-0.5">Best hours &amp; days to run ads · based on your conversion data · <RangeText /></p>
         </div>
         {data && <ExportButton onExportCSV={handleExportCSV} onExportPDF={handleExportPDF} />}
       </div>
@@ -233,7 +234,7 @@ export default function TimingPage() {
               {
                 label: "Total Ad Spend",
                 value: fmt(data.totalSpend),
-                sub: `${range.from} to ${range.to}`,
+                sub: formatDateSpan(range.from, range.to),
                 icon: <TrendingUp size={14} />,
               },
             ].map(k => (

@@ -7,7 +7,7 @@ import { Share2, ArrowDown, MousePointerClick, MonitorSmartphone, ShoppingCart, 
 import Link from "next/link";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, formatDateSpan } from "@/lib/date-range-context";
 import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend,
@@ -1133,7 +1133,7 @@ export default function MetaPage() {
     await exportToPDF(
       `skylitee-meta-${range.from}`,
       "Meta Ads Report",
-      `${data.adAccountName} · ${data.period.from} → ${data.period.to}`,
+      `${data.adAccountName} · ${formatDateSpan(data.period.from, data.period.to)}`,
       buildSections()
     );
   }
@@ -1144,7 +1144,7 @@ export default function MetaPage() {
         <div>
           <h2 className="text-lg font-bold text-[#18181B] dark:text-[#F4F4F5] flex items-center gap-2"><Share2 size={18} className="text-[#1877F2]" /> Meta Ads</h2>
           <p className="text-[15px] text-[#A1A1AA] mt-0.5">
-            {data.adAccountName} · {data.period.from} → {data.period.to}
+            {data.adAccountName} · {formatDateSpan(data.period.from, data.period.to)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1259,7 +1259,7 @@ export default function MetaPage() {
           {/* Daily Performance chart */}
           {dailyFmt.length > 0 && (
             <Card>
-              <CardHeader title="Daily Performance" right={`${data.period.from} → ${data.period.to}`} />
+              <CardHeader title="Daily Performance" right={formatDateSpan(data.period.from, data.period.to)} />
               <div className="h-52">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={dailyFmt} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>

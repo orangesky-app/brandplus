@@ -4,7 +4,8 @@ import { Trophy } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatINR } from "@/lib/utils";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeText } from "@/lib/date-range-context";
+import { RangeText } from "@/components/ui/period";
 import { exportToPDF, exportToCSV, ExportSection } from "@/lib/export";
 import { ExportButton } from "@/components/ui/export-button";
 
@@ -123,14 +124,14 @@ export default function BenchmarkingPage() {
 
   function buildSections(): ExportSection[] {
     return [
-      { title: `Benchmarks vs D2C category - ${range.label}`, headers: ["Metric", "Your store", "Category avg", "Top 10%", "Rank"],
+      { title: `Benchmarks vs D2C category - ${rangeText(range)}`, headers: ["Metric", "Your store", "Category avg", "Top 10%", "Rank"],
         rows: rows.map(r => [r.def.label, r.value !== null ? r.def.fmt(r.value) : "-", r.def.fmt(r.def.avg), r.def.fmt(r.def.top10), r.value !== null ? rankMeta[rankFor(r.value, r.def)].label : "-"]) },
       { title: "90-day improvement roadmap", headers: ["Action", "Effort", "Expected impact", "Priority"],
         rows: roadmap.map(r => [r.action, r.effort, r.impact, r.priority]) },
     ];
   }
   const handleCSV = () => exportToCSV("skylitee-benchmarking", buildSections());
-  const handlePDF = () => exportToPDF("skylitee-benchmarking", "Competitor Benchmarking", `Your store vs Indian ethnic D2C · ${range.label}`, buildSections());
+  const handlePDF = () => exportToPDF("skylitee-benchmarking", "Competitor Benchmarking", `Your store vs Indian ethnic D2C · ${rangeText(range)}`, buildSections());
 
   return (
     <div>
@@ -138,7 +139,7 @@ export default function BenchmarkingPage() {
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2"><Trophy size={18} className="text-[#F97316]" /> Competitor Benchmarking</h2>
           <p className="text-[17px] text-[#686864] mt-0.5">
-            Your <span className="font-medium text-[#181816]">live</span> store metrics ({range.label}) vs Indian ethnic-wear D2C category reference averages
+            Your <span className="font-medium text-[#181816]">live</span> store metrics (<RangeText />) vs Indian ethnic-wear D2C category reference averages
           </p>
         </div>
         <ExportButton onExportCSV={handleCSV} onExportPDF={handlePDF} disabled={rows.length === 0} />

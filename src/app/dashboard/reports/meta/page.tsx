@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useDateRange } from "@/lib/date-range-context";
+import { useDateRange, rangeText } from "@/lib/date-range-context";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV, exportToPDF } from "@/lib/export";
@@ -138,11 +138,11 @@ export default function MetaReportPage() {
             <div className="w-7 h-7 bg-[#1877F2] rounded-lg flex items-center justify-center"><BarChart3 size={14} className="text-white" /></div>
             <h1 className="text-xl font-bold text-[#18181B] dark:text-[#F4F4F5]">Meta Ads Report</h1>
           </div>
-          <p className="text-[14px] text-[#A1A1AA] ml-9">{data.adAccountName} · {range.label} · Generated {generatedAt}</p>
+          <p className="text-[14px] text-[#A1A1AA] ml-9">{data.adAccountName} · {rangeText(range)} · Generated {generatedAt}</p>
         </div>
         <ExportButton
           onExportCSV={() => exportToCSV(`skylitee-meta-report-${range.from}`, buildSections())}
-          onExportPDF={() => exportToPDF(`skylitee-meta-report-${range.from}`, "Meta Ads Report", `${data.adAccountName} · ${range.label}`, buildSections())}
+          onExportPDF={() => exportToPDF(`skylitee-meta-report-${range.from}`, "Meta Ads Report", `${data.adAccountName} · ${rangeText(range)}`, buildSections())}
         />
       </div>
 

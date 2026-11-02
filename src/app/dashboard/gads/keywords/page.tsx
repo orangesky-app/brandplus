@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { KeyRound } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
+import { formatDateSpan } from "@/lib/date-range-context";
 import {
   BenchmarkNote, DataTable, DiagPanel, GadsGate, GadsHeader, GoogleCountNote, Judged, KpiTile, Pills,
   PartialNotice, VerdictBadge, useGadsSection, type Column,
@@ -232,7 +233,7 @@ export default function GadsKeywordsPage() {
       <GadsHeader
         icon={KeyRound}
         title="Keywords & Searches"
-        subtitle={state.data ? `${state.data.account} · ${state.data.period.from} to ${state.data.period.to}` : "Quality Score, match types and the searches you pay for"}
+        subtitle={state.data ? `${state.data.account} · ${formatDateSpan(state.data.period.from, state.data.period.to)}` : "Quality Score, match types and the searches you pay for"}
       />
       <GoogleCountNote />
       <GadsGate state={state}>{d => <KeywordsView d={d} />}</GadsGate>

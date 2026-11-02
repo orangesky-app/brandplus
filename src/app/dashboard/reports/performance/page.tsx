@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useDateRange, formatReportPeriod } from "@/lib/date-range-context";
+import { readGadsResponse } from "@/lib/gads-client";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ExportButton } from "@/components/ui/export-button";
 import { exportToCSV } from "@/lib/export";
@@ -80,9 +81,10 @@ export default function PerformanceReportPage() {
       const placement = pR.status === "fulfilled" && !pR.value?.error ? pR.value : null;
       const shopMonthly = smR.status === "fulfilled" && Array.isArray(smR.value?.months) ? smR.value.months : [];
       const metaMonthly = mmR.status === "fulfilled" && Array.isArray(mmR.value?.months) ? mmR.value.months : [];
-      const gads = gaR.status === "fulfilled" ? gaR.value : null;
-      const googleSpend = gads && !gads.error ? (gads.kpis?.spend ?? gads.spend ?? 0) : 0;
-      const googleConnected = !!(gads && !gads.error && (gads.kpis?.spend != null || gads.spend != null));
+      // Goes through the shared reader so an account billing in another currency stays out of ₹ totals.
+      const gads = gaR.status === "fulfilled" ? readGadsResponse(gaR.value).data : null;
+      const googleSpend = gads?.kpis.spend ?? 0;
+      const googleConnected = !!gads;
       setSite(ga4?.property ?? meta?.adAccountName ?? "Your store");
       setModel(buildPerfModel({ sales, meta, sessions: ga4?.kpis?.sessions ?? 0, placement, shopMonthly, metaMonthly, googleSpend, googleConnected }));
     }).finally(() => setLoading(false));
