@@ -14,7 +14,7 @@ import {
   Plug, ChevronDown, UserCircle,
   X, CreditCard, Plus,
   FileText, TrendingUp, BarChart3, DollarSign, HelpCircle, FilePlus, Binoculars,
-  KeyRound, ListChecks,
+  KeyRound, ListChecks, Stethoscope,
 } from "lucide-react";
 import { SkyLiteeLogo } from "@/components/ui/skylitee-logo";
 import { isEmbedded } from "@/lib/embedded-client";
@@ -31,6 +31,7 @@ const navSections: NavSection[] = [
     tooltip: "Your daily command center - real-time alerts, AI-generated insights, and an AI assistant to answer brand questions.",
     items: [
       { href: "/dashboard", label: "Command Center", icon: LayoutDashboard, badge: null, dot: null },
+      { href: "/dashboard/diagnosis", label: "Growth Diagnosis", icon: Stethoscope, badge: { text: "New", color: "orange" }, dot: null },
       { href: "/dashboard/anomaly", label: "Anomaly Feed", icon: Radar, badge: { text: "5", color: "red" }, dot: null },
       { href: "/dashboard/insights", label: "AI Insights", icon: Brain, badge: { text: "11", color: "amber" }, dot: null },
       { href: "/dashboard/chat", label: "AI Assistant", icon: MessageSquareText, badge: { text: "New", color: "orange" }, dot: null },

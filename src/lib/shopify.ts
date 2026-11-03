@@ -318,8 +318,13 @@ export interface ShopifyOrder {
   fulfillment_status: string | null;
   payment_gateway: string;
   customer?: { id: number; orders_count: number; total_spent: string };
-  line_items: { product_id: number; title: string; quantity: number; price: string; total_discount?: string }[];
+  line_items: { id?: number; product_id: number; variant_id?: number | null; title: string; quantity: number; price: string; total_discount?: string; gift_card?: boolean }[];
   shipping_address?: { city: string; province: string };
+  // Only present when requested via the `fields` argument of fetchOrdersInRange.
+  tags?: string;
+  cancel_reason?: string | null;
+  discount_codes?: { code: string; amount: string; type: string }[];
+  refunds?: { refund_line_items?: { line_item_id: number; quantity: number; restock_type?: string }[] }[];
 }
 
 // Field set covering every Shopify route. Must include cancelled_at/test/financial_status
@@ -356,6 +361,10 @@ export async function fetchOrdersInRange(
   accessToken: string,
   fromISO: string,
   toISO?: string,
+  // Override the field list (keep cancelled_at,test,financial_status - isRealOrder needs them).
+  fields: string = ORDER_FIELDS,
+  // true = keep cancelled/voided orders too (still drops test orders) - for COD failure analysis.
+  includeCancelled = false,
 ): Promise<ShopifyOrder[]> {
   // Speed: cursor pagination is strictly sequential (~1s per 250-order page), so a busy month
   // took many round-trips in a row. Split the range into date windows and page through them
@@ -371,7 +380,7 @@ export async function fetchOrdersInRange(
     // Last window keeps the caller's open end (no max) so "through now" stays live.
     const wTo = i === windows - 1 ? toISO : new Date(startMs + step * (i + 1)).toISOString();
     const max = wTo ? `&created_at_max=${encodeURIComponent(wTo)}` : "";
-    const path = `/orders.json?status=any&created_at_min=${encodeURIComponent(wFrom)}${max}&limit=250&fields=${ORDER_FIELDS}`;
+    const path = `/orders.json?status=any&created_at_min=${encodeURIComponent(wFrom)}${max}&limit=250&fields=${fields}`;
     return shopifyFetchAll<ShopifyOrder>(shop, accessToken, path, "orders", 100);
   }));
 
@@ -383,7 +392,7 @@ export async function fetchOrdersInRange(
     seen.add(o.id);
     orders.push(o);
   }
-  return orders.filter(isRealOrder);
+  return includeCancelled ? orders.filter(o => !o.test) : orders.filter(isRealOrder);
 }
 
 // Concurrent order windows per request. Shopify's REST bucket is 40 requests (refilling 2/s),
@@ -420,6 +429,51 @@ export async function resolveShopifyPeriod(
   // Open-ended through "now" when the period runs to today; otherwise local end-of-day.
   const endISO = toParam ? zonedDayEndISO(toParam, tz) : new Date().toISOString();
   return { startISO, endISO, startYmd, endYmd, days: dayCount(startYmd, endYmd), tz };
+}
+
+// "Cost per item" the merchant entered in Shopify for each variant (InventoryItem.unitCost).
+// Returns variantId → cost; variants with no cost set are simply absent. Needs read_products
+// or read_inventory. This is the CURRENT cost - Shopify doesn't expose the cost at sale time.
+export async function fetchVariantCosts(shop: string, accessToken: string, variantIds: number[]): Promise<Map<number, number>> {
+  const costs = new Map<number, number>();
+  const ids = [...new Set(variantIds)];
+  const BATCH = 100;   // ~3 query-cost points per node keeps each call well under the 1000 limit
+  const batches: number[][] = [];
+  for (let i = 0; i < ids.length; i += BATCH) batches.push(ids.slice(i, i + BATCH));
+
+  const runBatch = async (batch: number[]) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await fetch(shopifyApiUrl(shop, "/graphql.json"), {
+        method: "POST",
+        headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: `query($ids: [ID!]!) { nodes(ids: $ids) { ... on ProductVariant { legacyResourceId inventoryItem { unitCost { amount } } } } }`,
+          variables: { ids: batch.map(id => `gid://shopify/ProductVariant/${id}`) },
+        }),
+      });
+      rotateTokenIfNeeded(shop, res);
+      if (!res.ok) throw new Error(`Shopify GraphQL ${res.status}: variant costs`);
+      const json = await res.json() as {
+        data?: { nodes?: ({ legacyResourceId?: string; inventoryItem?: { unitCost?: { amount: string } | null } | null } | null)[] };
+        errors?: { message: string; extensions?: { code?: string } }[];
+      };
+      if (json.errors?.some(e => e.extensions?.code === "THROTTLED")) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      if (json.errors?.length) throw new Error(`Shopify GraphQL: ${json.errors[0].message}`);
+      for (const n of json.data?.nodes ?? []) {
+        const amount = parseFloat(n?.inventoryItem?.unitCost?.amount ?? "");
+        if (n?.legacyResourceId && amount > 0) costs.set(Number(n.legacyResourceId), amount);
+      }
+      return;
+    }
+    throw new Error("Shopify GraphQL throttled: variant costs");
+  };
+
+  // A few batches at a time - large catalogues finish fast without tripping the cost bucket.
+  for (let i = 0; i < batches.length; i += 3) await Promise.all(batches.slice(i, i + 3).map(runBatch));
+  return costs;
 }
 
 export interface ShopifyProduct {

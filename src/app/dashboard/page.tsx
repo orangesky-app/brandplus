@@ -157,7 +157,9 @@ export default function CommandCenterPage() {
   const [ga4Channels, setGa4Channels] = useState<{ channel: string; sessions: number }[]>([]);
   const [funnelSrc, setFunnelSrc] = useState<"meta" | "google" | "ga4" | "shopify">("meta");
   const [connections, setConnections] = useState({ shopify: false, meta: false, gads: false, gsc: false, ga4: false });
-  const [cost, setCost] = useState<CostModel | null>(null);
+  const [savedCost, setCost] = useState<CostModel | null>(null);
+  // Product cost per order from Shopify's "Cost per item" (null = not set in Shopify).
+  const [shopCogsPerOrder, setShopCogsPerOrder] = useState<number | null>(null);
   const [salesTarget, setSalesTarget] = useState(0);
   const [chatQ, setChatQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -195,6 +197,11 @@ export default function CommandCenterPage() {
     setGsc(null); setGscKeywords([]);
     setGa4(null); setGa4Ecom(null); setGa4Channels([]);
     setGads(null); setCompGads(null); setGadsDaily([]); setGadsCampaigns([]); setGadsIssue(null);
+    setShopCogsPerOrder(null);
+    // Separate from the main batch so a slow cost lookup never holds up the page.
+    fetch(`/api/shopify/cogs?from=${range.from}&to=${range.to}`).then(r => r.json())
+      .then(d => { if (!stale && d && !d.error && d.status !== "none") setShopCogsPerOrder(d.cogs.perOrder); })
+      .catch(() => {});
     const compRange = getComparisonRange(range, compareWith);
     Promise.allSettled([
       fetch(`/api/shopify/dashboard?from=${range.from}&to=${range.to}`).then(r => r.json()),
@@ -307,7 +314,15 @@ export default function CommandCenterPage() {
   const adSalesValue = sales.purchaseValue + gSalesV;
   const salesRoasAll = adSpendForSales > 0 ? +(adSalesValue / adSpendForSales).toFixed(2) : 0;
 
-  // Break-even ROAS + unit economics from the saved cost model
+  // Cost model: Shopify's product cost wins over the typed-in one; other costs from Financial P&L
+  // (same defaults that page uses when nothing is saved).
+  const cost = useMemo<CostModel | null>(() => {
+    if (shopCogsPerOrder === null) return savedCost;
+    const base = savedCost ?? { cogsPerOrder: 0, shippingPerOrder: 0, rtoRate: 25, rtoCostPerOrder: 80, gatewayPct: 2, codFeePct: 1.5 };
+    return { ...base, cogsPerOrder: shopCogsPerOrder };
+  }, [savedCost, shopCogsPerOrder]);
+
+  // Break-even ROAS + unit economics from the cost model
   const econ = useMemo(() => {
     if (!k || !cost || k.aov <= 0) return null;
     const feePct = (codPct / 100) * (cost.codFeePct / 100) + (1 - codPct / 100) * (cost.gatewayPct / 100);

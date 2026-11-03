@@ -21,6 +21,17 @@ interface MetaKpis {
   spend: number; roas: number; cac: number; purchases: number; purchaseValue: number;
 }
 
+// /api/shopify/cogs - product cost from Shopify's "Cost per item".
+export interface ShopifyCogs {
+  status: "full" | "partial" | "none";
+  orders: number;
+  cogs: { actual: number; estimated: number; total: number; perOrder: number };
+  coverage: { salesPct: number; coveredUnits: number; totalUnits: number };
+  costRatioPct: number;
+  missing: { title: string; units: number; sales: number }[];
+  missingCount: number;
+}
+
 interface PLInputs {
   cogsPerOrder: number;
   shippingPerOrder: number;
@@ -147,6 +158,7 @@ export default function FinancialPage() {
   const [meta, setMeta] = useState<MetaKpis | null>(null);
   const [gads, setGads] = useState<GadsKpis | null>(null);
   const [gadsIssue, setGadsIssue] = useState<GadsIssue | null>(null);
+  const [shopCogs, setShopCogs] = useState<ShopifyCogs | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Load saved inputs from localStorage
@@ -171,14 +183,17 @@ export default function FinancialPage() {
     // A profit figure must never mix one period's sales with another's ad spend.
     let stale = false;
     setLoading(true);
-    setShopify(null); setMeta(null); setGads(null); setGadsIssue(null);
+    setShopify(null); setMeta(null); setGads(null); setGadsIssue(null); setShopCogs(null);
     (async () => {
       try {
-        const [shopRes, metaAccRes, g] = await Promise.all([
+        const [shopRes, metaAccRes, g, cogsJson] = await Promise.all([
           fetch(`/api/shopify/dashboard?from=${range.from}&to=${range.to}`),
           fetch("/api/meta/accounts"),
           fetchGoogleAds(range.from, range.to),
+          // Optional: if this fails the page falls back to the typed-in cost per order.
+          fetch(`/api/shopify/cogs?from=${range.from}&to=${range.to}`).then(r => r.json()).catch(() => null),
         ]);
+        if (!stale && cogsJson && !cogsJson.error) setShopCogs(cogsJson);
         const shopJson = await shopRes.json();
         const metaAccJson = await metaAccRes.json();
         const connected = !metaAccJson.error;
@@ -213,7 +228,10 @@ export default function FinancialPage() {
   const rtoCost         = Math.round(rtoOrders * saved.rtoCostPerOrder); // cost for reverse logistics
   const rtoTotal        = rtoRevenueLost + rtoCost;
 
-  const cogsTotal       = Math.round(totalOrders * saved.cogsPerOrder);
+  // Product cost: Shopify's "Cost per item" when the store has it, else the typed-in average.
+  const cogsFromShopify = !!shopCogs && shopCogs.status !== "none";
+  const cogsTotal       = cogsFromShopify ? shopCogs.cogs.total : Math.round(totalOrders * saved.cogsPerOrder);
+  const cogsPerOrder    = cogsFromShopify ? shopCogs.cogs.perOrder : saved.cogsPerOrder;
   const shippingTotal   = Math.round(totalOrders * saved.shippingPerOrder);
 
   const codRevenue      = Math.round(codOrders * aov);
@@ -245,7 +263,7 @@ export default function FinancialPage() {
     ? +((nonAdCosts + adSpend) / adSpend).toFixed(2)
     : null;
 
-  const inputsConfigured = saved.cogsPerOrder > 0 || saved.shippingPerOrder > 0;
+  const inputsConfigured = cogsPerOrder > 0 || saved.shippingPerOrder > 0;
 
   // ── Margin segments ────────────────────────────────────────────────────────
   const pctOf = (v: number) => grossSales > 0 ? (v / grossSales) * 100 : 0;
@@ -270,7 +288,7 @@ export default function FinancialPage() {
         <div>
           <h2 className="text-lg font-bold dark:text-[#F4F4F5] flex items-center gap-2"><Receipt size={18} className="text-[#F97316]" /> Financial P&amp;L</h2>
           <p className="text-[15px] text-[#A1A1AA] mt-0.5">
-            <RangeText /> · Real data from Shopify{metaConnected ? " + Meta" : ""}{gads ? " + Google Ads" : ""}
+            <RangeText /> · Real data from Shopify{cogsFromShopify ? " (incl. product cost)" : ""}{metaConnected ? " + Meta" : ""}{gads ? " + Google Ads" : ""}
           </p>
         </div>
         <button onClick={() => setShowSetup(s => !s)}
@@ -289,12 +307,22 @@ export default function FinancialPage() {
             We have your sales, ad spend, and orders from Shopify, Meta and Google Ads. Tell us your costs - we&apos;ll calculate the real profit.
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-            <InputField
-              label="Product cost per order (₹)"
-              hint="What you paid to make or buy the products in each order - raw material, printing, packaging"
-              value={inputs.cogsPerOrder}
-              onChange={v => setInputs(i => ({ ...i, cogsPerOrder: v }))}
-            />
+            {cogsFromShopify ? (
+              <div className="rounded-lg bg-[#F0FDF4] dark:bg-[#052E16] border border-[#22C55E]/20 p-3">
+                <div className="text-[14px] font-semibold text-[#15803D] dark:text-[#86EFAC]">Product cost: taken from Shopify</div>
+                <div className="text-[13px] text-[#71717A] mt-1">
+                  We read the &quot;Cost per item&quot; on each product in Shopify, so you don&apos;t need to type it here.
+                  {shopCogs.status === "partial" && " Some products have no cost yet - see the list on this page."}
+                </div>
+              </div>
+            ) : (
+              <InputField
+                label="Product cost per order (₹)"
+                hint="What you paid to make or buy the products in each order. Tip: fill &quot;Cost per item&quot; on your products in Shopify and we'll use that automatically."
+                value={inputs.cogsPerOrder}
+                onChange={v => setInputs(i => ({ ...i, cogsPerOrder: v }))}
+              />
+            )}
             <InputField
               label="Shipping cost per order (₹)"
               hint="Average cost to ship one order out - BlueDart, Delhivery, Shiprocket etc."
@@ -350,7 +378,35 @@ export default function FinancialPage() {
           <AlertTriangle size={14} className="text-[#EAB308] shrink-0 mt-0.5" />
           <div>
             <div className="text-[14px] font-semibold text-[#92400E] dark:text-[#FCD34D]">Set your costs to get accurate profit numbers</div>
-            <div className="text-[13px] text-[#A1A1AA] mt-0.5">Click &quot;Your Costs&quot; above to enter product cost, shipping, and RTO rate. Without these, profit will show as ₹0 cost.</div>
+            <div className="text-[13px] text-[#A1A1AA] mt-0.5">Fill &quot;Cost per item&quot; on your products in Shopify (we read it automatically), and click &quot;Your Costs&quot; above for shipping and RTO. Without these, profit will show as ₹0 cost.</div>
+          </div>
+        </div>
+      )}
+
+      {/* Products sold with no cost in Shopify */}
+      {shopCogs && shopCogs.missingCount > 0 && (shopCogs.status === "partial" || inputsConfigured) && (
+        <div className="flex items-start gap-2 bg-[#FFFBEB] dark:bg-[#2D1C00] border border-[#EAB308]/30 rounded-xl p-3 mb-4">
+          <AlertTriangle size={14} className="text-[#EAB308] shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[14px] font-semibold text-[#92400E] dark:text-[#FCD34D]">
+              {shopCogs.status === "none"
+                ? "No product costs found in Shopify"
+                : `${shopCogs.missingCount} product${shopCogs.missingCount === 1 ? "" : "s"} sold with no cost in Shopify - estimated at ${shopCogs.costRatioPct}% of price`}
+            </div>
+            <div className="text-[13px] text-[#A1A1AA] mt-0.5">
+              In Shopify go to Products → open the product → fill &quot;Cost per item&quot;. Profit here updates automatically.
+              {shopCogs.status === "partial" && ` ${shopCogs.coverage.salesPct}% of what you sold already has a real cost.`}
+            </div>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {shopCogs.missing.map((m, i) => (
+                <span key={i} className="text-[12px] bg-white dark:bg-[#1C1C1C] border border-black/[0.06] dark:border-white/[0.08] rounded-md px-2 py-0.5 text-[#52525B] dark:text-[#A1A1AA]">
+                  {m.title} · {m.units} sold
+                </span>
+              ))}
+              {shopCogs.missingCount > shopCogs.missing.length && (
+                <span className="text-[12px] text-[#A1A1AA] px-1 py-0.5">+{shopCogs.missingCount - shopCogs.missing.length} more</span>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -371,8 +427,12 @@ export default function FinancialPage() {
             label="Product / manufacturing cost"
             value={cogsTotal}
             deduct
-            sub={saved.cogsPerOrder > 0 ? `₹${saved.cogsPerOrder} × ${totalOrders} orders` : "Not set - click Your Costs"}
-            muted={saved.cogsPerOrder === 0}
+            sub={cogsFromShopify
+              ? shopCogs.status === "full"
+                ? `From Shopify "Cost per item" · ${shopCogs.coverage.totalUnits} items sold`
+                : `From Shopify: ${formatINR(shopCogs.cogs.actual)} real + ${formatINR(shopCogs.cogs.estimated)} estimated (${shopCogs.missingCount} products have no cost)`
+              : saved.cogsPerOrder > 0 ? `₹${saved.cogsPerOrder} × ${totalOrders} orders · your estimate` : "Not set - add Cost per item in Shopify or click Your Costs"}
+            muted={cogsTotal === 0}
           />
           <Row
             label="Shipping (outward)"
@@ -560,12 +620,12 @@ export default function FinancialPage() {
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {[
                   { label: "Avg order value", value: aov > 0 ? formatINR(aov) : "-" },
-                  { label: "Product cost", value: saved.cogsPerOrder > 0 ? formatINR(saved.cogsPerOrder) : "-" },
+                  { label: "Product cost", value: cogsPerOrder > 0 ? formatINR(cogsPerOrder) : "-" },
                   { label: "Shipping cost", value: saved.shippingPerOrder > 0 ? formatINR(saved.shippingPerOrder) : "-" },
                   { label: "CAC (from Meta)", value: meta?.cac ? formatINR(meta.cac) : "-" },
                   {
                     label: "Profit per order",
-                    value: totalOrders > 0 && (saved.cogsPerOrder > 0 || saved.shippingPerOrder > 0)
+                    value: totalOrders > 0 && inputsConfigured
                       ? formatINR(Math.round(netProfit / totalOrders))
                       : "-",
                   },
